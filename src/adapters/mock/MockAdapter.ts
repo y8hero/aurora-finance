@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { canonicalJson } from '../../core/canonical'
 import { IdempotencyStore } from '../../core/idempotency'
 import { assertKycTierAllows, featureForAccountType } from '../../core/kyc/kycTier'
-import type { TenantId } from '../../core/types'
+import type { TenantId, ProviderName } from '../../core/types'
 import { HmacSha256Verifier } from '../../webhooks/signature'
 import type { WebhookParser } from '../../webhooks/receiver'
 import type {
@@ -30,6 +30,7 @@ export const MOCK_TIMESTAMP_HEADER = 'x-mock-timestamp'
 export interface MockWebhookBody {
   id: string
   type: string
+  provider_customer_id: string
   occurred_at?: string
   data?: unknown
 }
@@ -38,12 +39,21 @@ export const mockWebhookParser: WebhookParser = {
   provider: 'mock',
   parse(rawBody) {
     const body = JSON.parse(rawBody) as Partial<MockWebhookBody>
-    if (typeof body.id !== 'string' || typeof body.type !== 'string') {
-      throw new Error('mock webhook requires string "id" and "type"')
+
+    if (
+      typeof body.id !== 'string' ||
+      typeof body.type !== 'string' ||
+      typeof body.provider_customer_id !== 'string'
+    ) {
+      throw new Error('mock webhook requires id, type, and provider_customer_id')
     }
-    return body.occurred_at
-      ? { eventId: body.id, eventType: body.type, occurredAt: body.occurred_at }
-      : { eventId: body.id, eventType: body.type }
+
+    return {
+      eventId: body.id,
+      eventType: body.type,
+      providerCustomerId: body.provider_customer_id,
+      ...(body.occurred_at ? { occurredAt: body.occurred_at } : {}),
+    }
   },
 }
 
@@ -58,16 +68,13 @@ export function createMockVerifier(secret: string, now?: () => number): HmacSha2
   })
 }
 
-/**
- * In-memory provider implementing the full ProviderAdapter for tests and local dev.
- * Mirrors Maplerad's KYC tier gating: customers start at Tier 0; virtual accounts (collections)
- * and cards (issuing) require Tier 1. Records every call so tests can assert behaviour.
- */
 export class MockAdapter implements ProviderAdapter {
   readonly name = 'mock' as const
   readonly calls: { method: string; args: unknown[] }[] = []
   readonly verifier: HmacSha256Verifier
+
   private readonly customers = new Map<TenantId, Map<string, ProviderCustomer>>()
+  private readonly customerTenants = new Map<string, TenantId>()
   private readonly accounts = new Map<TenantId, ProviderAccount[]>()
   private readonly quotes = new Map<string, FxQuote>()
   private readonly idempotency = new IdempotencyStore()
@@ -78,11 +85,18 @@ export class MockAdapter implements ProviderAdapter {
     this.now = now
   }
 
+  readonly tenantResolver = {
+    resolve: async (
+      _provider: ProviderName,
+      providerCustomerId: string,
+    ): Promise<TenantId | undefined> => this.customerTenants.get(providerCustomerId),
+  }
+
   private record(method: string, ...args: unknown[]): void {
     this.calls.push({ method, args })
   }
 
-  private requireCustomer(tenantId: TenantId, externalId: string): ProviderCustomer {
+  private customerFor(tenantId: TenantId, externalId: string): ProviderCustomer {
     const customer = this.customers.get(tenantId)?.get(externalId)
     if (!customer) throw new Error(`unknown customer ${externalId} for tenant ${tenantId}`)
     return customer
@@ -94,15 +108,7 @@ export class MockAdapter implements ProviderAdapter {
 
   async createCustomer(input: CustomerInput): Promise<ProviderCustomer> {
     this.record('createCustomer', input)
-    for (const [field, value] of Object.entries({
-      firstName: input.firstName,
-      lastName: input.lastName,
-      email: input.email,
-      country: input.country,
-    })) {
-      if (!value || value.trim().length === 0) throw new Error(`createCustomer requires ${field}`)
-    }
-    // Tier 0 requires only name + email; the mock approves it instantly.
+
     const customer: ProviderCustomer = {
       tenant_id: input.tenant_id,
       provider: 'mock',
@@ -110,35 +116,51 @@ export class MockAdapter implements ProviderAdapter {
       kycStatus: 'approved',
       kycTier: 0,
     }
-    let bucket = this.customers.get(input.tenant_id)
-    if (!bucket) {
-      bucket = new Map()
-      this.customers.set(input.tenant_id, bucket)
-    }
+
+    const bucket = this.customers.get(input.tenant_id) ?? new Map<string, ProviderCustomer>()
     bucket.set(customer.externalId, customer)
+    this.customers.set(input.tenant_id, bucket)
+    this.customerTenants.set(customer.externalId, input.tenant_id)
+
     return customer
   }
 
   async upgradeCustomerKyc(input: KycUpgradeInput): Promise<ProviderCustomer> {
     this.record('upgradeCustomerKyc', input)
-    const existing = this.requireCustomer(input.tenant_id, input.customerExternalId)
+
+    const existing = this.customerFor(input.tenant_id, input.customerExternalId)
+
     if (input.targetTier <= existing.kycTier) {
-      throw new Error(`customer is already at tier ${existing.kycTier}; cannot "upgrade" to ${input.targetTier}`)
+      throw new Error(`customer is already at tier ${existing.kycTier}`)
     }
+
     if (input.targetTier === 2 && existing.kycTier < 1) {
-      throw new Error('Tier 1 must be completed before Tier 2')
+      throw new Error('Tier 1 must be completed before Tier 2; tier1 data is required')
     }
-    if (input.targetTier === 1 && !input.tier1) throw new Error('Tier 1 upgrade requires tier1 data')
-    if (input.targetTier === 2 && !input.tier2) throw new Error('Tier 2 upgrade requires tier2 data')
-    const updated: ProviderCustomer = { ...existing, kycTier: input.targetTier, kycStatus: 'approved' }
+
+    if (input.targetTier === 1 && !input.tier1) {
+      throw new Error('tier1 data is required for Tier 1 upgrade')
+    }
+
+    if (input.targetTier === 2 && !input.tier2) {
+      throw new Error('tier2 data is required for Tier 2 upgrade')
+    }
+
+    const updated: ProviderCustomer = {
+      ...existing,
+      kycTier: input.targetTier,
+    }
+
     this.customers.get(input.tenant_id)!.set(input.customerExternalId, updated)
     return updated
   }
 
   async createAccount(input: AccountInput): Promise<ProviderAccount> {
     this.record('createAccount', input)
-    const customer = this.requireCustomer(input.tenant_id, input.customerExternalId)
+
+    const customer = this.customerFor(input.tenant_id, input.customerExternalId)
     const feature = featureForAccountType(input.type)
+
     if (feature) {
       assertKycTierAllows({
         tenant_id: input.tenant_id,
@@ -147,6 +169,7 @@ export class MockAdapter implements ProviderAdapter {
         feature,
       })
     }
+
     const account: ProviderAccount = {
       tenant_id: input.tenant_id,
       provider: 'mock',
@@ -154,83 +177,122 @@ export class MockAdapter implements ProviderAdapter {
       currency: input.currency,
       type: input.type,
     }
-    const list = this.accounts.get(input.tenant_id) ?? []
-    list.push(account)
-    this.accounts.set(input.tenant_id, list)
+
+    const accounts = this.accounts.get(input.tenant_id) ?? []
+    accounts.push(account)
+    this.accounts.set(input.tenant_id, accounts)
     return account
   }
 
   async getBalances(tenantId: TenantId): Promise<Balance[]> {
     this.record('getBalances', tenantId)
-    return (this.accounts.get(tenantId) ?? []).map((a) => ({
+
+    return (this.accounts.get(tenantId) ?? []).map((account) => ({
       tenant_id: tenantId,
-      accountExternalId: a.externalId,
-      available: { amount: '0.00', currency: a.currency },
+      accountExternalId: account.externalId,
+      available: { amount: '0', currency: account.currency },
     }))
   }
 
   async quoteFx(input: FxInput): Promise<FxQuote> {
     this.record('quoteFx', input)
+
     const quote: FxQuote = {
       tenant_id: input.tenant_id,
       quoteRef: `fxq_${randomUUID()}`,
       sell: input.sell,
       buy: { amount: input.sell.amount, currency: input.buyCurrency },
-      rate: '1.0000',
-      fee: { amount: '0.00', currency: input.sell.currency },
+      rate: '1',
+      fee: { amount: '0', currency: input.sell.currency },
       expiresAt: new Date(this.now().getTime() + 60_000).toISOString(),
     }
+
     this.quotes.set(quote.quoteRef, quote)
     return quote
   }
 
   async executeFx(tenantId: TenantId, quoteRef: string): Promise<FxResult> {
     this.record('executeFx', tenantId, quoteRef)
+
     const quote = this.quotes.get(quoteRef)
-    if (!quote || quote.tenant_id !== tenantId) throw new Error('unknown quote for tenant')
-    if (new Date(quote.expiresAt) < this.now()) throw new Error('quote expired')
-    return { tenant_id: tenantId, quoteRef, executedAt: this.now().toISOString(), providerRef: `fx_${randomUUID()}` }
+    if (!quote || quote.tenant_id !== tenantId) {
+      throw new Error('unknown quote for tenant')
+    }
+
+    if (new Date(quote.expiresAt) < this.now()) {
+      throw new Error('quote expired')
+    }
+
+    return {
+      tenant_id: tenantId,
+      quoteRef,
+      executedAt: this.now().toISOString(),
+      providerRef: `fx_${randomUUID()}`,
+    }
   }
 
   async createPayout(input: PayoutInput, idempotencyKey: string): Promise<PayoutResult> {
-    return this.idempotency.run(input.tenant_id, idempotencyKey, canonicalJson(input), async () => {
-      this.record('createPayout', input, idempotencyKey)
-      return { tenant_id: input.tenant_id, providerRef: `po_${randomUUID()}`, status: 'pending' as const }
-    })
+    return this.idempotency.run(
+      input.tenant_id,
+      idempotencyKey,
+      canonicalJson(input),
+      async () => {
+        this.record('createPayout', input, idempotencyKey)
+
+        return {
+          tenant_id: input.tenant_id,
+          providerRef: `po_${randomUUID()}`,
+          status: 'pending',
+        }
+      },
+    )
   }
 
   async issueCard(input: CardInput): Promise<Card> {
     this.record('issueCard', input)
-    const customer = this.requireCustomer(input.tenant_id, input.customerExternalId)
+
+    const customer = this.customerFor(input.tenant_id, input.customerExternalId)
+
     assertKycTierAllows({
       tenant_id: input.tenant_id,
       customerExternalId: input.customerExternalId,
       kycTier: customer.kycTier,
       feature: 'issuing',
     })
-    return { tenant_id: input.tenant_id, provider: 'mock', externalId: `card_${randomUUID()}`, last4: '4242', status: 'active' }
+
+    return {
+      tenant_id: input.tenant_id,
+      provider: 'mock',
+      externalId: `card_${randomUUID()}`,
+      last4: '4242',
+      status: 'active',
+    }
   }
 
   async parseWebhook(rawBody: string, headers: WebhookHeaders): Promise<ProviderEvent> {
-    const v = this.verifier.verify(rawBody, headers)
-    if (!v.ok) throw new Error(`webhook signature invalid: ${v.reason}`)
+    const verification = this.verifier.verify(rawBody, headers)
+    if (!verification.ok) {
+      throw new Error(`webhook signature invalid: ${verification.reason}`)
+    }
+
     const parsed = mockWebhookParser.parse(rawBody)
     const body = JSON.parse(rawBody) as MockWebhookBody
+
     return {
       provider: 'mock',
       eventId: parsed.eventId,
       eventType: parsed.eventType,
-      ...(parsed.occurredAt ? { occurredAt: parsed.occurredAt } : {}),
       payload: body.data,
+      ...(parsed.occurredAt ? { occurredAt: parsed.occurredAt } : {}),
     }
   }
 
-  /** Test helper: build signed headers for a body at a given unix time. */
   signHeaders(rawBody: string, unixSeconds?: number): WebhookHeaders {
-    const ts = String(unixSeconds ?? Math.floor(this.now().getTime() / 1000))
+    const timestamp = String(unixSeconds ?? Math.floor(this.now().getTime() / 1000))
+
     return {
-      [MOCK_SIGNATURE_HEADER]: this.verifier.sign(rawBody, ts),
-      [MOCK_TIMESTAMP_HEADER]: ts,
+      [MOCK_SIGNATURE_HEADER]: this.verifier.sign(rawBody, timestamp),
+      [MOCK_TIMESTAMP_HEADER]: timestamp,
       'content-type': 'application/json',
     }
   }

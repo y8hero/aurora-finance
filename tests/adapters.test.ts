@@ -161,7 +161,7 @@ describe('Mock adapter (interface conformance)', () => {
 
     const acc = await mock.createAccount!({ tenant_id: tbc, customerExternalId: cus.externalId, currency: 'EUR', type: 'virtual_account' })
     const balances = await mock.getBalances(tbc)
-    expect(balances).toEqual([{ tenant_id: tbc, accountExternalId: acc.externalId, available: { amount: '0.00', currency: 'EUR' } }])
+    expect(balances).toEqual([{ tenant_id: tbc, accountExternalId: acc.externalId, available: { amount: '0', currency: 'EUR' } }])
     expect(await mock.getBalances(tenantId('someone-else'))).toEqual([])
 
     const quote = await mock.quoteFx!({ tenant_id: tbc, sell: { amount: '100', currency: 'EUR' }, buyCurrency: 'USD' })

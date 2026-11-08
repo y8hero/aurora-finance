@@ -1,0 +1,26 @@
+{
+  "source": "UNVERIFIED: Maplerad verified country coverage list has not yet been obtained",
+  "last_checked": "2026-11-07",
+  "verified": false,
+  "recheck_before_launch": true,
+  "candidate_codes": [
+    "NG",
+    "GB",
+    "US",
+    "CA",
+    "GH",
+    "KE",
+    "ZA",
+    "UG",
+    "TZ",
+    "DE",
+    "FR",
+    "IE",
+    "NL",
+    "BE",
+    "ES",
+    "IT",
+    "PT"
+  ],
+  "verified_codes": []
+}

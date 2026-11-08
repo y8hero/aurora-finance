@@ -1,4 +1,16 @@
 import restrictedData from '../config/restricted-jurisdictions.json'
+import coverageData from '../config/maplerad-country-coverage.json'
+
+interface MapleradCoverageConfig {
+  readonly source: string
+  readonly last_checked: string
+  readonly verified: boolean
+  readonly recheck_before_launch: boolean
+  readonly candidate_codes: readonly string[]
+  readonly verified_codes: readonly string[]
+}
+
+const coverage = coverageData as MapleradCoverageConfig
 
 export const RESTRICTED_JURISDICTIONS_LAST_CHECKED = restrictedData.last_checked
 
@@ -10,8 +22,11 @@ export const RESTRICTED_REGION_NAMES: readonly string[] = Object.freeze([
   ...restrictedData.restricted_regions,
 ])
 
-const countryCodes = new Set(RESTRICTED_COUNTRY_CODES)
-const regionNames = new Set(RESTRICTED_REGION_NAMES.map(normalise))
+const restrictedCountryCodes = new Set(RESTRICTED_COUNTRY_CODES)
+const restrictedRegionNames = new Set(RESTRICTED_REGION_NAMES.map(normalise))
+const verifiedCoverageCodes = new Set(
+  coverage.verified_codes.map((code) => code.toUpperCase()),
+)
 
 export type JurisdictionSubject = 'tenant' | 'ubo' | 'counterparty'
 
@@ -19,6 +34,8 @@ export interface JurisdictionUbo {
   readonly name: string
   readonly country?: string
   readonly address?: string
+  readonly city?: string
+  readonly region?: string
 }
 
 export interface JurisdictionTenant {
@@ -38,7 +55,12 @@ export interface JurisdictionCounterparty {
 
 export interface JurisdictionReviewItem {
   readonly subject: JurisdictionSubject
-  readonly reason: 'missing_country' | 'unknown_country' | 'invalid_country' | 'restricted_country' | 'restricted_region'
+  readonly reason:
+    | 'missing_country'
+    | 'unknown_country'
+    | 'invalid_country'
+    | 'restricted_country'
+    | 'restricted_region'
   readonly value?: string
   readonly message: string
 }
@@ -48,19 +70,9 @@ export interface JurisdictionScreeningResult {
   readonly reviewItems: readonly JurisdictionReviewItem[]
 }
 
-export class RestrictedJurisdictionError extends Error {
-  override name = 'RestrictedJurisdictionError'
-  constructor(
-    readonly subject: JurisdictionSubject,
-    readonly country: string,
-    readonly matchedJurisdiction: string,
-  ) {
-    super(`${subject} country code is restricted by Maplerad: ${country}`)
-  }
-}
-
 export class JurisdictionReviewRequiredError extends Error {
   override name = 'JurisdictionReviewRequiredError'
+
   constructor(readonly items: readonly JurisdictionReviewItem[]) {
     super(`Jurisdiction review required: ${items.map((item) => item.message).join('; ')}`)
   }
@@ -70,11 +82,11 @@ export function normalise(value: string): string {
   return value.trim().toLocaleLowerCase('en-US').replace(/\s+/g, ' ')
 }
 
-function countryCodeIssue(
+function countryIssue(
   subject: JurisdictionSubject,
   country: string | undefined,
 ): JurisdictionReviewItem | undefined {
-  if (country === undefined || country.trim() === '') {
+  if (!country || country.trim() === '') {
     return {
       subject,
       reason: 'missing_country',
@@ -82,8 +94,9 @@ function countryCodeIssue(
     }
   }
 
-  const normalized = country.trim().toUpperCase()
-  if (!/^[A-Z]{2}$/.test(normalized)) {
+  const code = country.trim().toUpperCase()
+
+  if (!/^[A-Z]{2}$/.test(code)) {
     return {
       subject,
       reason: 'invalid_country',
@@ -92,28 +105,21 @@ function countryCodeIssue(
     }
   }
 
-  if (countryCodes.has(normalized)) {
+  if (restrictedCountryCodes.has(code)) {
     return {
       subject,
       reason: 'restricted_country',
-      value: normalized,
-      message: `${subject} country code ${normalized} is restricted by Maplerad`,
+      value: code,
+      message: `${subject} country code ${code} is restricted by Maplerad`,
     }
   }
 
-  // This is intentionally conservative: a valid but unsupported/unknown code
-  // cannot pass until the coverage catalogue is verified.
-  const knownCommonCodes = new Set([
-    'AT', 'AU', 'BE', 'BR', 'CA', 'CH', 'CN', 'DE', 'DK', 'EG', 'ES', 'FI',
-    'FR', 'GB', 'GH', 'IE', 'IN', 'IT', 'JP', 'KE', 'LU', 'MX', 'NL', 'NO',
-    'NZ', 'PL', 'PT', 'SE', 'SG', 'TR', 'TZ', 'UG', 'US', 'ZA',
-  ])
-  if (!knownCommonCodes.has(normalized)) {
+  if (!coverage.verified || !verifiedCoverageCodes.has(code)) {
     return {
       subject,
       reason: 'unknown_country',
-      value: normalized,
-      message: `${subject} country code ${normalized} is not in Aurora's verified country catalogue`,
+      value: code,
+      message: `${subject} country code ${code} is not in Maplerad's verified coverage list`,
     }
   }
 
@@ -126,10 +132,11 @@ function regionIssue(
 ): JurisdictionReviewItem | undefined {
   for (const field of fields) {
     if (!field) continue
-    const match = RESTRICTED_REGION_NAMES.find((name) => {
-      const needle = normalise(name)
-      return normalise(field).includes(needle)
-    })
+
+    const match = RESTRICTED_REGION_NAMES.find((name) =>
+      normalise(field).includes(normalise(name)),
+    )
+
     if (match) {
       return {
         subject,
@@ -139,35 +146,48 @@ function regionIssue(
       }
     }
   }
+
   return undefined
 }
 
 export function screenTenantJurisdiction(input: JurisdictionTenant): JurisdictionScreeningResult {
   const items: JurisdictionReviewItem[] = []
-  const countryIssue = countryCodeIssue('tenant', input.country)
-  if (countryIssue) items.push(countryIssue)
-  const tenantRegionIssue = regionIssue('tenant', [input.address, input.city, input.region])
-  if (tenantRegionIssue) items.push(tenantRegionIssue)
+
+  const tenantCountry = countryIssue('tenant', input.country)
+  if (tenantCountry) items.push(tenantCountry)
+
+  const tenantRegion = regionIssue('tenant', [input.address, input.city, input.region])
+  if (tenantRegion) items.push(tenantRegion)
 
   for (const owner of input.beneficialOwners) {
-    const ownerCountryIssue = countryCodeIssue('ubo', owner.country)
-    if (ownerCountryIssue) items.push(ownerCountryIssue)
-    const ownerRegionIssue = regionIssue('ubo', [owner.address])
-    if (ownerRegionIssue) items.push(ownerRegionIssue)
+    const ownerCountry = countryIssue('ubo', owner.country)
+    if (ownerCountry) items.push(ownerCountry)
+
+    const ownerRegion = regionIssue('ubo', [owner.address, owner.city, owner.region])
+    if (ownerRegion) items.push(ownerRegion)
   }
 
-  return Object.freeze({ allowed: items.length === 0, reviewItems: Object.freeze(items) })
+  return Object.freeze({
+    allowed: items.length === 0,
+    reviewItems: Object.freeze(items),
+  })
 }
 
 export function screenCounterpartyJurisdiction(
   input: JurisdictionCounterparty,
 ): JurisdictionScreeningResult {
   const items: JurisdictionReviewItem[] = []
-  const countryIssue = countryCodeIssue('counterparty', input.country)
-  if (countryIssue) items.push(countryIssue)
-  const localityIssue = regionIssue('counterparty', [input.address, input.city, input.region])
-  if (localityIssue) items.push(localityIssue)
-  return Object.freeze({ allowed: items.length === 0, reviewItems: Object.freeze(items) })
+
+  const country = countryIssue('counterparty', input.country)
+  if (country) items.push(country)
+
+  const region = regionIssue('counterparty', [input.address, input.city, input.region])
+  if (region) items.push(region)
+
+  return Object.freeze({
+    allowed: items.length === 0,
+    reviewItems: Object.freeze(items),
+  })
 }
 
 export function assertTenantJurisdictionAllowed(input: JurisdictionTenant): void {
@@ -180,11 +200,7 @@ export function assertCounterpartyJurisdictionAllowed(input: JurisdictionCounter
   if (!result.allowed) throw new JurisdictionReviewRequiredError(result.reviewItems)
 }
 
-/**
- * Compatibility helper: accepts only ISO alpha-2 codes. Free-text country names
- * deliberately do not match and must be rejected by the screening functions.
- */
 export function restrictedJurisdictionMatch(countryCode: string): string | undefined {
   const code = countryCode.trim().toUpperCase()
-  return countryCodes.has(code) ? code : undefined
+  return restrictedCountryCodes.has(code) ? code : undefined
 }

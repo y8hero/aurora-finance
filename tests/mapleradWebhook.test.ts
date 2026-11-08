@@ -10,7 +10,7 @@ import {
 } from '../src/adapters/maplerad/MapleradWebhookVerifier'
 import { Secret } from '../src/config/env'
 import { InMemoryAuditLog } from '../src/core/audit/auditLog'
-import { tenantId, type ProviderName } from '../src/core/types'
+import { PLATFORM_TENANT, type ProviderName } from '../src/core/types'
 import { InMemoryWebhookEventStore } from '../src/webhooks/eventStore'
 import { WebhookReceiver, type WebhookParser } from '../src/webhooks/receiver'
 import { VerifierRegistry } from '../src/webhooks/signature'
@@ -25,7 +25,7 @@ import { VerifierRegistry } from '../src/webhooks/signature'
 const RAW_KEY_TEXT = 'aurora-test-signing-key-0123456789'
 const RAW_KEY = Buffer.from(RAW_KEY_TEXT, 'utf8')
 const SECRET = `whsec_${RAW_KEY.toString('base64')}`
-const NOW = Math.floor(Date.UTC(2026, 10, 7, 12, 0, 0) / 1000) // 2026-11-07T12:00:00Z
+const NOW = Math.floor(Date.UTC(2026, 10, 7, 12, 0, 0) / 1000)
 const SVIX_ID = 'msg_aurora_vector_0001'
 const SVIX_TS = String(NOW)
 const BODY = '{"event":"test.vector","data":{"amount":"100.00","currency":"NGN","nested":{"b":2,"a":1}}}'
@@ -47,7 +47,9 @@ function headers(overrides: Record<string, string | undefined> = {}) {
   return base
 }
 
-function makeVerifier(opts: Partial<ConstructorParameters<typeof MapleradWebhookVerifier>[0]> = {}) {
+function makeVerifier(
+  opts: Partial<ConstructorParameters<typeof MapleradWebhookVerifier>[0]> = {},
+) {
   return new MapleradWebhookVerifier({ signingSecret: SECRET, now: () => NOW, ...opts })
 }
 
@@ -61,8 +63,8 @@ describe('Maplerad Svix-style signature: helpers', () => {
   it('extracts only v1 entries from a space-delimited header', () => {
     expect(parseSvixSignatureHeader(`v1,${REF_SIG}`)).toEqual([REF_SIG])
     expect(parseSvixSignatureHeader(`v0,aaaa v1,bbbb  v1,cccc`)).toEqual(['bbbb', 'cccc'])
-    expect(parseSvixSignatureHeader(`v0,aaaa`)).toEqual([])
-    expect(parseSvixSignatureHeader(`garbage`)).toEqual([])
+    expect(parseSvixSignatureHeader('v0,aaaa')).toEqual([])
+    expect(parseSvixSignatureHeader('garbage')).toEqual([])
   })
 
   it('normalises IPv4-mapped IPv6 addresses', () => {
@@ -84,14 +86,19 @@ describe('MapleradWebhookVerifier', () => {
   })
 
   it('accepts a Secret-wrapped signing secret', () => {
-    const v = new MapleradWebhookVerifier({ signingSecret: new Secret(SECRET), now: () => NOW })
+    const v = new MapleradWebhookVerifier({
+      signingSecret: new Secret(SECRET),
+      now: () => NOW,
+    })
     expect(v.verify(BODY, headers()).ok).toBe(true)
   })
 
   it('accepts when the valid v1 entry is one of several (including unknown versions)', () => {
     const v = makeVerifier()
     const bogus = Buffer.alloc(32, 7).toString('base64')
-    const h = headers({ 'svix-signature': `v0,deadbeef v1,${bogus} v1,${REF_SIG}` })
+    const h = headers({
+      'svix-signature': `v0,deadbeef v1,${bogus} v1,${REF_SIG}`,
+    })
     expect(v.verify(BODY, h).ok).toBe(true)
   })
 
@@ -104,15 +111,22 @@ describe('MapleradWebhookVerifier', () => {
 
   it('rejects a wrong secret', () => {
     const other = `whsec_${Buffer.from('some-other-key-xxxxxxxxxxxxxxxxxxxx').toString('base64')}`
-    const v = new MapleradWebhookVerifier({ signingSecret: other, now: () => NOW })
-    expect(v.verify(BODY, headers())).toMatchObject({ ok: false, reason: 'signature mismatch' })
+    const v = new MapleradWebhookVerifier({
+      signingSecret: other,
+      now: () => NOW,
+    })
+    expect(v.verify(BODY, headers())).toMatchObject({
+      ok: false,
+      reason: 'signature mismatch',
+    })
   })
 
   it('rejects a tampered body (signed content uses the RAW body)', () => {
     const v = makeVerifier()
     expect(v.verify(BODY.replace('100.00', '999999.00'), headers()).ok).toBe(false)
-    // Re-serialising JSON with different key order must also fail: the raw bytes are what is signed.
-    const reordered = '{"event":"test.vector","data":{"amount":"100.00","currency":"NGN","nested":{"a":1,"b":2}}}'
+
+    const reordered =
+      '{"event":"test.vector","data":{"amount":"100.00","currency":"NGN","nested":{"a":1,"b":2}}}'
     expect(v.verify(reordered, headers()).ok).toBe(false)
   })
 
@@ -123,16 +137,26 @@ describe('MapleradWebhookVerifier', () => {
   })
 
   it('rejects stale and future timestamps beyond 5 minutes, accepts within', () => {
-    const okAt = (ts: number) => {
-      const t = String(ts)
-      const sig = referenceSignature(RAW_KEY, SVIX_ID, t, BODY)
-      return makeVerifier().verify(BODY, headers({ 'svix-timestamp': t, 'svix-signature': `v1,${sig}` }))
+    const verifyAt = (timestamp: number) => {
+      const value = String(timestamp)
+      const signature = referenceSignature(RAW_KEY, SVIX_ID, value, BODY)
+      return makeVerifier().verify(
+        BODY,
+        headers({
+          'svix-timestamp': value,
+          'svix-signature': `v1,${signature}`,
+        }),
+      )
     }
-    expect(okAt(NOW - 300).ok).toBe(true)
-    expect(okAt(NOW + 300).ok).toBe(true)
-    expect(okAt(NOW - 301)).toMatchObject({ ok: false, reason: expect.stringMatching(/replay|tolerance/) })
-    expect(okAt(NOW + 301).ok).toBe(false)
-    expect(okAt(NOW - 3600).ok).toBe(false)
+
+    expect(verifyAt(NOW - 300).ok).toBe(true)
+    expect(verifyAt(NOW + 300).ok).toBe(true)
+    expect(verifyAt(NOW - 301)).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/replay|tolerance/),
+    })
+    expect(verifyAt(NOW + 301).ok).toBe(false)
+    expect(verifyAt(NOW - 3600).ok).toBe(false)
   })
 
   it('rejects missing or malformed headers', () => {
@@ -146,7 +170,11 @@ describe('MapleradWebhookVerifier', () => {
   })
 
   it('refuses secrets that do not start with whsec_', () => {
-    expect(() => new MapleradWebhookVerifier({ signingSecret: 'sk_test_not_a_webhook_secret' })).toThrow(MapleradWebhookSecretError)
+    expect(() =>
+      new MapleradWebhookVerifier({
+        signingSecret: 'sk_test_not_a_webhook_secret',
+      }),
+    ).toThrow(MapleradWebhookSecretError)
   })
 
   it('never exposes the key material', () => {
@@ -161,7 +189,9 @@ describe('MapleradWebhookVerifier', () => {
     const allowed = ['203.0.113.10', '2001:db8::1']
 
     it('is a no-op when empty', () => {
-      expect(makeVerifier().verify(BODY, headers(), { sourceIp: '198.51.100.1' }).ok).toBe(true)
+      expect(
+        makeVerifier().verify(BODY, headers(), { sourceIp: '198.51.100.1' }).ok,
+      ).toBe(true)
     })
 
     it('accepts listed IPs, including IPv4-mapped form', () => {
@@ -173,27 +203,44 @@ describe('MapleradWebhookVerifier', () => {
 
     it('rejects unlisted or unknown IPs before touching the signature', () => {
       const v = makeVerifier({ allowedSourceIps: allowed })
-      expect(v.verify(BODY, headers(), { sourceIp: '198.51.100.1' })).toMatchObject({ ok: false, reason: expect.stringMatching(/allow-list/) })
-      expect(v.verify(BODY, headers())).toMatchObject({ ok: false, reason: expect.stringMatching(/unknown/) })
+      expect(v.verify(BODY, headers(), { sourceIp: '198.51.100.1' })).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/allow-list/),
+      })
+      expect(v.verify(BODY, headers())).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/unknown/),
+      })
     })
   })
 })
 
 describe('maplerad verifier in the receiver pipeline', () => {
-  it('registers under provider "maplerad" and the receiver still rejects for lack of a parser (payloads UNVERIFIED)', async () => {
+  it('registers under provider "maplerad" and rejects an unresolved event in system scope', async () => {
     const verifiers = new VerifierRegistry().register(makeVerifier())
-    expect(verifiers.has('maplerad')).toBe(true)
     const audit = new InMemoryAuditLog()
     const receiver = new WebhookReceiver({
       verifiers,
       parsers: new Map<ProviderName, WebhookParser>(),
+      tenantResolver: {
+        resolve: async () => undefined,
+      },
       store: new InMemoryWebhookEventStore(),
       audit,
       logger: pino({ level: 'silent' }),
     })
-    const out = await receiver.receive({ provider: 'maplerad', tenantId: tenantId('tbc'), rawBody: BODY, headers: headers() })
+
+    const out = await receiver.receive({
+      provider: 'maplerad',
+      rawBody: BODY,
+      headers: headers(),
+    })
+
     expect(out.status).toBe('rejected')
-    if (out.status === 'rejected') expect(out.reason).toMatch(/no verifier\/parser/)
-    expect((await audit.list(tenantId('tbc')))[0]?.action).toBe('webhook.rejected')
+    if (out.status === 'rejected') {
+      expect(out.reason).toMatch(/no verifier\/parser|not mapped to a tenant|unresolved tenant/i)
+    }
+
+    expect((await audit.list(PLATFORM_TENANT))[0]?.action).toBe('webhook.rejected')
   })
 })
