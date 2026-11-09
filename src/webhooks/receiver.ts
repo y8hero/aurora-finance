@@ -4,7 +4,7 @@ import type { AuditLog } from '../core/audit/auditLog'
 import { PLATFORM_TENANT, type ProviderName, type TenantId } from '../core/types'
 import type { Logger } from '../logging/logger'
 import type { WebhookEventRecord, WebhookEventStore } from './eventStore'
-import { headerValue, type VerifyContext, type VerifierRegistry } from './signature'
+import { headerValue, type VerifierRegistry } from './signature'
 
 export interface WebhookParser {
   readonly provider: ProviderName
@@ -17,10 +17,7 @@ export interface WebhookParser {
 }
 
 export interface WebhookTenantResolver {
-  resolve(
-    provider: ProviderName,
-    providerCustomerId: string,
-  ): Promise<TenantId | undefined>
+  resolve(provider: ProviderName, providerCustomerId: string): Promise<TenantId | undefined>
 }
 
 export type ReceiveOutcome =
@@ -67,7 +64,6 @@ export class WebhookReceiver {
     }
 
     let parsed: ReturnType<WebhookParser['parse']>
-
     try {
       parsed = parser.parse(input.rawBody)
     } catch (error) {
@@ -88,15 +84,6 @@ export class WebhookReceiver {
     }
 
     const deliveryId = headerValue(input.headers, 'svix-id') ?? parsed.eventId
-    const existing = await this.deps.store.findByDelivery(input.provider, deliveryId)
-
-    if (existing && existing.tenant_id !== resolvedTenant) {
-      return this.reject(
-        input.provider,
-        'delivery replayed for a different tenant',
-      )
-    }
-
     const now = (this.deps.now ?? (() => new Date()))()
     const record: WebhookEventRecord = {
       tenant_id: resolvedTenant,
@@ -113,6 +100,13 @@ export class WebhookReceiver {
     const result = await this.deps.store.insertIfAbsent(record)
 
     if (!result.inserted) {
+      if (result.record.tenant_id !== resolvedTenant) {
+        return this.reject(
+          input.provider,
+          'delivery replayed for a different tenant',
+        )
+      }
+
       this.deps.logger.info(
         { provider: input.provider, tenantId: resolvedTenant, svixId: deliveryId },
         'webhook duplicate ignored',

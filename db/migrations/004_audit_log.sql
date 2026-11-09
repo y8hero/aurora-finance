@@ -6,10 +6,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
   hash text NOT NULL,
   actor text NOT NULL,
   action text NOT NULL,
-  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  before jsonb,
+  after jsonb,
+  metadata jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, seq),
-  UNIQUE (tenant_id, seq)
+  PRIMARY KEY (tenant_id, seq)
 );
 
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
@@ -35,3 +36,8 @@ DROP TRIGGER IF EXISTS audit_log_no_delete ON audit_log;
 CREATE TRIGGER audit_log_no_delete
 BEFORE DELETE ON audit_log
 FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+DROP TRIGGER IF EXISTS audit_log_no_truncate ON audit_log;
+CREATE TRIGGER audit_log_no_truncate
+BEFORE TRUNCATE ON audit_log
+FOR EACH STATEMENT EXECUTE FUNCTION prevent_audit_mutation();

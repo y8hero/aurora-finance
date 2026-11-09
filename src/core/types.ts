@@ -10,8 +10,12 @@ export function tenantId(raw: string): TenantId {
   return raw as TenantId
 }
 
-/** Platform-level actions are recorded under this tenant. */
-export const PLATFORM_TENANT: TenantId = tenantId('platform')
+/**
+ * Fixed database-backed system tenant. This UUID is seeded by migration 001
+ * and is used for platform-level audit events such as unresolved webhooks.
+ */
+export const PLATFORM_TENANT =
+  '00000000-0000-0000-0000-000000000001' as TenantId
 
 export interface TenantRecord {
   readonly tenant_id: TenantId
@@ -20,16 +24,6 @@ export interface TenantRecord {
 export type Region = 'EU' | 'US' | 'AFRICA'
 export type ProviderName = 'maplerad' | 'circle' | 'mock'
 
-/**
- * Monetary amounts are integer minor units represented as decimal strings.
- *
- * Examples:
- * - USD 100.00 => amount "10000", currency "USD"
- * - NGN 100.00 => amount "10000", currency "NGN"
- *
- * The `amount` property is retained for API compatibility with the Phase 1
- * skeleton; it must contain minor units, never a decimal major-unit amount.
- */
 export interface Money {
   readonly amount: string
   readonly currency: string

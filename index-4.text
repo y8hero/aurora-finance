@@ -1,7 +1,5 @@
-001_tenants.sql
-002_provider_customers.sql
-003_webhook_events.sql
-004_audit_log.sql
-005_idempotency_keys.sql
-006_api_keys.sql
-007_erp_outbox.sql
+db/migrations/001_tenants.sql
+db/migrations/002_provider_customers.sql
+db/migrations/003_webhook_events.sql
+db/migrations/004_audit_log.sql
+db/migrations/005_idempotency_keys.sql

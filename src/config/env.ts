@@ -4,6 +4,7 @@ import { z } from 'zod'
 const MAX_SECRET_LENGTH = 4096
 const MAX_URL_LENGTH = 2048
 const MAX_IP_LIST_LENGTH = 4096
+const MAX_PATH_LENGTH = 4096
 
 export class Secret {
   readonly #value: string
@@ -57,6 +58,13 @@ const optionalUrl = z
   .transform((value) => (value && value.length > 0 ? value : undefined))
   .pipe(z.string().url().optional())
 
+const optionalPath = z
+  .string()
+  .trim()
+  .max(MAX_PATH_LENGTH)
+  .optional()
+  .transform((value) => (value && value.length > 0 ? value : undefined))
+
 const mapleradBaseUrl = z
   .string()
   .trim()
@@ -71,9 +79,7 @@ const ipList = z
   .max(MAX_IP_LIST_LENGTH)
   .optional()
   .transform((value) =>
-    value
-      ? value.split(',').map((part) => part.trim()).filter(Boolean)
-      : [],
+    value ? value.split(',').map((part) => part.trim()).filter(Boolean) : [],
   )
   .refine((ips) => ips.length <= 32, {
     message: 'must contain no more than 32 IP addresses',
@@ -90,6 +96,7 @@ const schema = z.object({
     .default('info'),
 
   DATABASE_URL: optionalSecret,
+  DATABASE_CA_CERT_PATH: optionalPath,
 
   MAPLERAD_ENV: z.enum(['sandbox']).default('sandbox'),
   MAPLERAD_BASE_URL: mapleradBaseUrl,
@@ -137,6 +144,7 @@ const CONFIG_KEYS = [
   'PORT',
   'LOG_LEVEL',
   'DATABASE_URL',
+  'DATABASE_CA_CERT_PATH',
   'MAPLERAD_ENV',
   'MAPLERAD_BASE_URL',
   'MAPLERAD_SECRET_KEY_SANDBOX',

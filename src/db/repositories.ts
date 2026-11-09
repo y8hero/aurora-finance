@@ -1,11 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import type { Pool, PoolClient } from 'pg'
 import type { TenantId, ProviderName } from '../core/types'
-import type { TenantScopedStore } from '../core/store/tenantStore'
 import type { AuditEntry, AuditEntryInput, AuditLog, ChainVerification } from '../core/audit/auditLog'
+import { GENESIS_HASH, hashEntry } from '../core/audit/auditLog'
 import type { WebhookEventRecord, WebhookEventStore, InsertResult } from '../webhooks/eventStore'
 import type { WebhookTenantResolver } from '../webhooks/receiver'
-import { hashEntry, GENESIS_HASH } from '../core/audit/auditLog'
-import { IdempotencyConflictError, type IdempotencyStore } from '../core/idempotency'
+import { IdempotencyConflictError } from '../core/idempotency'
 
 type Row = Record<string, unknown>
 
@@ -62,7 +62,6 @@ export class PostgresWebhookEventStore implements WebhookEventStore {
        FROM webhook_events WHERE provider = $1 AND delivery_id = $2`,
       [record.provider, record.svix_id],
     )
-
     const row = existing.rows[0]
     if (!row) throw new Error('Webhook insert conflict but existing row was not found')
     return { inserted: false, record: asWebhook(row) }
@@ -97,7 +96,7 @@ export class PostgresWebhookEventStore implements WebhookEventStore {
 }
 
 function asAudit(row: Row): AuditEntry {
-  return {
+  const entry: AuditEntry = {
     tenant_id: asTenantId(row.tenant_id),
     id: String(row.id),
     seq: Number(row.seq),
@@ -106,8 +105,19 @@ function asAudit(row: Row): AuditEntry {
     action: String(row.action),
     prev_hash: String(row.prev_hash),
     hash: String(row.hash),
-    ...(row.metadata ? { metadata: row.metadata as Record<string, unknown> } : {}),
   }
+
+  if (row.before !== null && row.before !== undefined) {
+    entry.before = row.before
+  }
+  if (row.after !== null && row.after !== undefined) {
+    entry.after = row.after
+  }
+  if (row.metadata !== null && row.metadata !== undefined) {
+    entry.metadata = row.metadata as Record<string, unknown>
+  }
+
+  return entry
 }
 
 export class PostgresAuditLog implements AuditLog {
@@ -115,9 +125,13 @@ export class PostgresAuditLog implements AuditLog {
 
   async append(input: AuditEntryInput): Promise<AuditEntry> {
     const client = await this.pool.connect()
+
     try {
       await client.query('BEGIN')
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [input.tenant_id])
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [input.tenant_id],
+      )
 
       const previous = await client.query<Row>(
         `SELECT seq, hash FROM audit_log
@@ -128,9 +142,9 @@ export class PostgresAuditLog implements AuditLog {
       const seq = prev ? Number(prev.seq) + 1 : 1
       const prevHash = prev ? String(prev.hash) : GENESIS_HASH
       const createdAt = new Date().toISOString()
-      const unhashed = {
+      const unhashed: Omit<AuditEntry, 'hash'> = {
         ...input,
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         seq,
         timestamp: createdAt,
         prev_hash: prevHash,
@@ -139,17 +153,20 @@ export class PostgresAuditLog implements AuditLog {
 
       const inserted = await client.query<Row>(
         `INSERT INTO audit_log
-         (tenant_id, seq, prev_hash, hash, actor, action, metadata, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         RETURNING id, tenant_id, seq, prev_hash, hash, actor, action, metadata, created_at`,
+         (id, tenant_id, seq, prev_hash, hash, actor, action, before, after, metadata, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         RETURNING id, tenant_id, seq, prev_hash, hash, actor, action, before, after, metadata, created_at`,
         [
+          unhashed.id,
           input.tenant_id,
           seq,
           prevHash,
           hash,
           input.actor,
           input.action,
-          JSON.stringify(input.metadata ?? {}),
+          input.before ?? null,
+          input.after ?? null,
+          input.metadata ?? null,
           createdAt,
         ],
       )
@@ -166,7 +183,7 @@ export class PostgresAuditLog implements AuditLog {
 
   async list(tenantId: TenantId): Promise<readonly AuditEntry[]> {
     const result = await this.pool.query<Row>(
-      `SELECT id, tenant_id, seq, prev_hash, hash, actor, action, metadata, created_at
+      `SELECT id, tenant_id, seq, prev_hash, hash, actor, action, before, after, metadata, created_at
        FROM audit_log WHERE tenant_id = $1 ORDER BY seq`,
       [tenantId],
     )
@@ -206,71 +223,88 @@ export interface PostgresIdempotencyRecord {
   readonly tenant_id: TenantId
   readonly key: string
   readonly request_hash: string
+  readonly status: 'in_progress' | 'completed'
   readonly response: unknown
   readonly created_at: string
+  readonly updated_at: string
+}
+
+function asIdempotency(row: Row): PostgresIdempotencyRecord {
+  return {
+    tenant_id: asTenantId(row.tenant_id),
+    key: String(row.key),
+    request_hash: String(row.request_hash),
+    status: row.status as 'in_progress' | 'completed',
+    response: row.response,
+    created_at: new Date(String(row.created_at)).toISOString(),
+    updated_at: new Date(String(row.updated_at)).toISOString(),
+  }
 }
 
 export class PostgresIdempotencyStore {
   constructor(private readonly pool: Pool) {}
 
-  async get(tenantId: TenantId, key: string): Promise<PostgresIdempotencyRecord | undefined> {
-    const result = await this.pool.query<Row>(
-      `SELECT tenant_id, key, request_hash, response, created_at
-       FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`,
-      [tenantId, key],
-    )
-    const row = result.rows[0]
-    return row
-      ? {
-          tenant_id: asTenantId(row.tenant_id),
-          key: String(row.key),
-          request_hash: String(row.request_hash),
-          response: row.response,
-          created_at: new Date(String(row.created_at)).toISOString(),
-        }
-      : undefined
-  }
-
-  async put(
+  async run<T>(
     tenantId: TenantId,
     key: string,
-    requestHash: string,
-    response: unknown,
-  ): Promise<PostgresIdempotencyRecord> {
-    const existing = await this.get(tenantId, key)
-    if (existing) {
-      if (existing.request_hash !== requestHash) {
-        throw new IdempotencyConflictError(`Idempotency key ${key} reused with a different payload`)
-      }
-      return existing
-    }
-
-    const result = await this.pool.query<Row>(
+    fingerprint: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const claimed = await this.pool.query<Row>(
       `INSERT INTO idempotency_keys
-       (tenant_id, key, request_hash, response, created_at)
-       VALUES ($1,$2,$3,$4,$5)
+       (tenant_id, key, request_hash, status, response, created_at, updated_at)
+       VALUES ($1,$2,$3,'in_progress',NULL,now(),now())
        ON CONFLICT (tenant_id, key) DO NOTHING
-       RETURNING tenant_id, key, request_hash, response, created_at`,
-      [tenantId, key, requestHash, JSON.stringify(response), new Date().toISOString()],
+       RETURNING tenant_id, key, request_hash, status, response, created_at, updated_at`,
+      [tenantId, key, fingerprint],
     )
 
-    if (result.rows[0]) {
-      const row = result.rows[0]
-      return {
-        tenant_id: asTenantId(row.tenant_id),
-        key: String(row.key),
-        request_hash: String(row.request_hash),
-        response: row.response,
-        created_at: new Date(String(row.created_at)).toISOString(),
+    if (!claimed.rows[0]) {
+      const existingResult = await this.pool.query<Row>(
+        `SELECT tenant_id, key, request_hash, status, response, created_at, updated_at
+         FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`,
+        [tenantId, key],
+      )
+      const existing = existingResult.rows[0]
+      if (!existing) {
+        throw new Error('Idempotency claim conflict but row was not found')
       }
+
+      const record = asIdempotency(existing)
+      if (record.request_hash !== fingerprint) {
+        throw new IdempotencyConflictError(
+          `Idempotency key ${key} reused with a different payload`,
+        )
+      }
+      if (record.status === 'in_progress') {
+        throw new IdempotencyConflictError(
+          `Idempotency key ${key} is already in progress`,
+        )
+      }
+      return record.response as T
     }
 
-    const concurrent = await this.get(tenantId, key)
-    if (!concurrent) throw new Error('Idempotency insert conflict but row was not found')
-    if (concurrent.request_hash !== requestHash) {
-      throw new IdempotencyConflictError(`Idempotency key ${key} reused with a different payload`)
+    try {
+      const result = await fn()
+      const updated = await this.pool.query<Row>(
+        `UPDATE idempotency_keys
+         SET status = 'completed', response = $3, updated_at = now()
+         WHERE tenant_id = $1 AND key = $2 AND request_hash = $4 AND status = 'in_progress'
+         RETURNING tenant_id, key, request_hash, status, response, created_at, updated_at`,
+        [tenantId, key, result, fingerprint],
+      )
+      if (!updated.rows[0]) {
+        throw new Error('Idempotency claim was lost before completion')
+      }
+      return result
+    } catch (error) {
+      await this.pool.query(
+        `DELETE FROM idempotency_keys
+         WHERE tenant_id = $1 AND key = $2 AND request_hash = $3 AND status = 'in_progress'`,
+        [tenantId, key, fingerprint],
+      )
+      throw error
     }
-    return concurrent
   }
 }
 
