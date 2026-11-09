@@ -1,0 +1,26 @@
+{
+  "source": "UNVERIFIED: observed from a Maplerad sandbox probe; confirm for live and per product",
+  "last_checked": "2026-11-07",
+  "verified": false,
+  "recheck_before_live": true,
+  "codes": [
+    "NGN",
+    "USD",
+    "GHS",
+    "KES",
+    "TZS",
+    "UGX",
+    "MWK",
+    "MZN",
+    "PYUSD",
+    "RWF",
+    "CDF",
+    "ZAR",
+    "SLE",
+    "LRD",
+    "XAF",
+    "XOF",
+    "USDT",
+    "USDC"
+  ]
+}

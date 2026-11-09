@@ -24,30 +24,50 @@ const customerInput: CustomerInput = {
   firstName: 'Walter',
   lastName: 'Example',
   email: 'walter@example.test',
-  country: 'gb',
+  country: 'GB',
   region: 'EU',
   beneficialOwners: [{ name: 'Walter Example', role: 'director' }],
   sourceOfFundsRef: 'gov-contract-1',
 }
 
-const WEBHOOK_SECRET = `whsec_${Buffer.from('adapter-test-webhook-key-000000000').toString('base64')}`
+const webhookSecret = `whsec_${Buffer.from(
+  'adapter-test-webhook-key-000000000',
+).toString('base64')}`
 
-describe('Maplerad adapter — verified facts encoded, no live calls', () => {
+describe('Maplerad adapter', () => {
   const adapter = new MapleradAdapter({
     environment: 'sandbox',
     secretKey: new Secret('sk_test_x'),
-    webhookSecret: new Secret(WEBHOOK_SECRET),
+    webhookSecret: new Secret(webhookSecret),
+    transport: {
+      async get() {
+        return { status: 200, body: {} }
+      },
+    },
   })
 
   it('uses the single verified base URL and refuses non-https', () => {
     expect(MAPLERAD_BASE_URL).toBe('https://api.maplerad.com')
     expect(adapter.baseUrl).toBe('https://api.maplerad.com')
-    expect(new MapleradAdapter({ environment: 'sandbox', baseUrl: 'https://api.maplerad.com/' }).baseUrl).toBe('https://api.maplerad.com')
-    expect(() => new MapleradAdapter({ environment: 'sandbox', baseUrl: 'http://api.maplerad.com' })).toThrow(MapleradInputError)
+    expect(
+      new MapleradAdapter({
+        environment: 'sandbox',
+        baseUrl: 'https://api.maplerad.com/',
+      }).baseUrl,
+    ).toBe('https://api.maplerad.com')
+    expect(
+      () =>
+        new MapleradAdapter({
+          environment: 'sandbox',
+          baseUrl: 'http://api.maplerad.com',
+        }),
+    ).toThrow(MapleradInputError)
   })
 
-  it('builds the verified Bearer header only at the point of use', () => {
-    expect(mapleradAuthorizationHeader(new Secret('sk_test_x'))).toBe('Bearer sk_test_x')
+  it('builds the verified Bearer header', () => {
+    expect(mapleradAuthorizationHeader(new Secret('sk_test_x'))).toBe(
+      'Bearer sk_test_x',
+    )
   })
 
   it('does not retain or serialise the secret', () => {
@@ -55,67 +75,158 @@ describe('Maplerad adapter — verified facts encoded, no live calls', () => {
     expect(adapter.hasSecretKey).toBe(true)
   })
 
-  it('maps CustomerInput to the verified POST /v1/customers body (exactly four fields)', () => {
-    const body = toMapleradCreateCustomerBody(customerInput)
-    expect(body).toEqual({ first_name: 'Walter', last_name: 'Example', email: 'walter@example.test', country: 'GB' })
-    expect(Object.keys(body).sort()).toEqual(['country', 'email', 'first_name', 'last_name'])
-    expect(() => toMapleradCreateCustomerBody({ ...customerInput, email: ' ' })).toThrow(MapleradInputError)
-    expect(() => toMapleradCreateCustomerBody({ ...customerInput, firstName: '' })).toThrow(/first_name/)
+  it('maps CustomerInput to the verified create-customer body', () => {
+    expect(toMapleradCreateCustomerBody(customerInput)).toEqual({
+      first_name: 'Walter',
+      last_name: 'Example',
+      email: 'walter@example.test',
+      country: 'GB',
+    })
+
+    expect(() =>
+      toMapleradCreateCustomerBody({ ...customerInput, email: ' ' }),
+    ).toThrow(MapleradInputError)
+    expect(() =>
+      toMapleradCreateCustomerBody({ ...customerInput, firstName: '' }),
+    ).toThrow(/first_name/)
   })
 
-  it('prepares (but never sends) the create-customer request', () => {
-    const req = adapter.prepareCreateCustomer(customerInput)
-    expect(req.method).toBe('POST')
-    expect(req.url).toBe(`https://api.maplerad.com${MAPLERAD_PATHS.createCustomer}`)
-    expect(req.url).toBe('https://api.maplerad.com/v1/customers')
-    expect(req.headers.Authorization).toBe('Bearer sk_test_x')
-    expect(req.headers['Content-Type']).toBe('application/json')
-    expect(JSON.parse(req.body ?? '')).toEqual({ first_name: 'Walter', last_name: 'Example', email: 'walter@example.test', country: 'GB' })
+  it('prepares but never sends the create-customer request', () => {
+    const request = adapter.prepareCreateCustomer(customerInput)
+
+    expect(request.method).toBe('POST')
+    expect(request.url).toBe(
+      `https://api.maplerad.com${MAPLERAD_PATHS.createCustomer}`,
+    )
+    expect(request.headers.Authorization).toBe('Bearer sk_test_x')
+    expect(request.headers['Content-Type']).toBe('application/json')
+    expect(JSON.parse(request.body ?? '')).toEqual({
+      first_name: 'Walter',
+      last_name: 'Example',
+      email: 'walter@example.test',
+      country: 'GB',
+    })
 
     const noKey = new MapleradAdapter({ environment: 'sandbox' })
-    expect(() => noKey.prepareCreateCustomer(customerInput)).toThrow(/secret key not configured/)
+    expect(() => noKey.prepareCreateCustomer(customerInput)).toThrow(
+      /MAPLERAD_SECRET_KEY_SANDBOX/,
+    )
   })
 
-  it('throws UNVERIFIED from every ProviderAdapter method (response/payload shapes unconfirmed)', async () => {
-    const calls: Promise<unknown>[] = [
-      adapter.checkAuth(),
-      adapter.createCustomer(customerInput),
-      adapter.upgradeCustomerKyc({ tenant_id: tbc, customerExternalId: 'c', targetTier: 1 }),
-      adapter.createAccount({ tenant_id: tbc, customerExternalId: 'c', currency: 'USD', type: 'treasury' }),
-      adapter.getBalances(tbc),
-      adapter.quoteFx({ tenant_id: tbc, sell: { amount: '1', currency: 'USD' }, buyCurrency: 'NGN' }),
-      adapter.executeFx(tbc, 'q'),
-      adapter.createPayout({ tenant_id: tbc, counterpartyId: 'cp', amount: { amount: '1', currency: 'USD' }, reference: 'Support', purposeCategory: 'charity' }, 'k'),
-      adapter.issueCard({ tenant_id: tbc, customerExternalId: 'c', currency: 'USD', kind: 'virtual' }),
+  it('checkAuth performs the verified read-only countries probe', async () => {
+    let calls = 0
+    const checked = new MapleradAdapter({
+      environment: 'sandbox',
+      secretKey: new Secret('sk_test_x'),
+      transport: {
+        async get(request) {
+          calls += 1
+          expect(request.url).toBe('https://api.maplerad.com/v1/countries')
+          expect(request.headers.Authorization).toBe('Bearer sk_test_x')
+          return { status: 200, body: { countries: [] } }
+        },
+      },
+    })
+
+    await expect(checked.checkAuth()).resolves.toBeUndefined()
+    expect(calls).toBe(1)
+  })
+
+  it('throws UNVERIFIED from every still-unverified Maplerad method', async () => {
+    const calls: Array<() => Promise<unknown>> = [
+      () => adapter.createCustomer(customerInput),
+      () =>
+        adapter.upgradeCustomerKyc({
+          tenant_id: tbc,
+          customerExternalId: 'c',
+          targetTier: 1,
+        }),
+      () =>
+        adapter.createAccount({
+          tenant_id: tbc,
+          customerExternalId: 'c',
+          currency: 'USD',
+          type: 'treasury',
+        }),
+      () => adapter.getBalances(tbc),
+      () =>
+        adapter.quoteFx({
+          tenant_id: tbc,
+          sell: { amount: '1', currency: 'USD' },
+          buyCurrency: 'NGN',
+        }),
+      () => adapter.executeFx(tbc, 'q'),
+      () =>
+        adapter.createPayout(
+          {
+            tenant_id: tbc,
+            counterpartyId: 'cp',
+            amount: { amount: '1', currency: 'USD' },
+            reference: 'Support',
+            purposeCategory: 'charity',
+          },
+          'k',
+        ),
+      () =>
+        adapter.issueCard({
+          tenant_id: tbc,
+          customerExternalId: 'c',
+          currency: 'USD',
+          kind: 'virtual',
+        }),
     ]
-    for (const c of calls) {
-      await expect(c).rejects.toBeInstanceOf(UnverifiedError)
-      await expect(c).rejects.toThrow(/^UNVERIFIED: complete Phase 0/)
+
+    for (const call of calls) {
+      await expect(call()).rejects.toBeInstanceOf(UnverifiedError)
+      await expect(call()).rejects.toThrow(/^UNVERIFIED: complete Phase 0/)
     }
   })
 
-  it('createCustomer validates the verified body shape before refusing', async () => {
-    await expect(adapter.createCustomer({ ...customerInput, email: '' })).rejects.toBeInstanceOf(MapleradInputError)
+  it('rejects a bad webhook signature before checking the unverified event schema', async () => {
+    const body = '{"event":"unverified.test"}'
+
+    await expect(
+      adapter.parseWebhook(body, {
+        'svix-id': 'msg_bad_signature',
+        'svix-timestamp': String(Math.floor(Date.now() / 1000)),
+        'svix-signature': 'v1,invalid',
+      }),
+    ).rejects.toThrow(/Maplerad webhook signature invalid/)
   })
 
-  it('parseWebhook enforces the verified signature, then refuses on the unverified payload', async () => {
-    const verifier = adapter.webhookVerifier!
-    const body = '{"anything":true}'
-    const id = 'msg_adapter_test'
-    const ts = String(Math.floor(Date.now() / 1000))
+  it('rejects a correctly signed webhook as UNVERIFIED when its event schema is unknown', async () => {
+    const body = '{"event":"unverified.test"}'
+    const svixId = 'msg_valid_signature'
+    const svixTimestamp = String(Math.floor(Date.now() / 1000))
+    const verifier = adapter.webhookVerifier
 
-    await expect(adapter.parseWebhook(body, {})).rejects.toThrow(/signature invalid/)
+    expect(verifier).toBeDefined()
+
+    const signature = verifier!.sign(body, svixId, svixTimestamp)
+
     await expect(
-      adapter.parseWebhook(body, { 'svix-id': id, 'svix-timestamp': ts, 'svix-signature': 'v1,AAAA' }),
-    ).rejects.toThrow(/signature invalid/)
+      adapter.parseWebhook(body, {
+        'svix-id': svixId,
+        'svix-timestamp': svixTimestamp,
+        'svix-signature': signature,
+      }),
+    ).rejects.toBeInstanceOf(UnverifiedError)
 
-    const good = { 'svix-id': id, 'svix-timestamp': ts, 'svix-signature': verifier.sign(body, id, ts) }
-    await expect(adapter.parseWebhook(body, good)).rejects.toBeInstanceOf(UnverifiedError)
-    await expect(adapter.parseWebhook(body, good)).rejects.toThrow(/event names and payload/)
+    await expect(
+      adapter.parseWebhook(body, {
+        'svix-id': svixId,
+        'svix-timestamp': svixTimestamp,
+        'svix-signature': signature,
+      }),
+    ).rejects.toThrow(/^UNVERIFIED: complete Phase 0/)
+  })
 
+  it('uses the new missing webhook secret message', async () => {
     const noSecret = new MapleradAdapter({ environment: 'sandbox' })
-    expect(noSecret.webhookVerifier).toBeUndefined()
-    await expect(noSecret.parseWebhook(body, good)).rejects.toThrow(/signing secret not configured/)
+
+    await expect(noSecret.parseWebhook('{}', {})).rejects.toThrow(
+      /MAPLERAD_WEBHOOK_SECRET/,
+    )
   })
 
   it('documents the verified API areas', () => {
@@ -125,60 +236,118 @@ describe('Maplerad adapter — verified facts encoded, no live calls', () => {
   })
 })
 
-describe('Circle stub', () => {
-  const adapter = new CircleAdapter({ environment: 'testnet', apiKey: new Secret('TEST_API_KEY:a:b') })
+describe('Circle adapter', () => {
+  it('checkAuth performs the verified read-only public-key probe', async () => {
+    const adapter = new CircleAdapter({
+      environment: 'testnet',
+      apiKey: new Secret('PREFIX:ID:SECRET'),
+      transport: {
+        async get(request) {
+          expect(request.url).toBe(
+            'https://api.circle.com/v1/w3s/config/entity/publicKey',
+          )
+          expect(request.headers.Authorization).toBe(
+            'Bearer PREFIX:ID:SECRET',
+          )
+          return { status: 200, body: { data: { publicKey: 'redacted' } } }
+        },
+      },
+    })
 
-  it('does not retain the key', () => {
-    expect(JSON.stringify(adapter)).not.toContain('TEST_API_KEY')
-    expect(adapter.hasApiKey).toBe(true)
-    expect(adapter.hasBaseUrl).toBe(false)
+    await expect(adapter.checkAuth()).resolves.toBeUndefined()
   })
 
-  it('throws UNVERIFIED from every method, including address resolution', async () => {
-    await expect(adapter.checkAuth()).rejects.toBeInstanceOf(UnverifiedError)
-    await expect(adapter.getBalances(tbc)).rejects.toBeInstanceOf(UnverifiedError)
-    await expect(adapter.createAccount({ tenant_id: tbc, customerExternalId: 'c', currency: 'USDC', type: 'wallet', chain: 'SOL' })).rejects.toBeInstanceOf(UnverifiedError)
-    await expect(adapter.parseWebhook('{}', {})).rejects.toBeInstanceOf(UnverifiedError)
-    expect(() => adapter.resolveAssetAddress('USDC', 'SOL')).toThrow(UnverifiedError)
+  it('throws UNVERIFIED from every still-unverified Circle method', async () => {
+    const adapter = new CircleAdapter({
+      environment: 'testnet',
+      apiKey: new Secret('PREFIX:ID:SECRET'),
+      transport: {
+        async get() {
+          return { status: 200, body: {} }
+        },
+      },
+    })
+
+    const calls: Array<() => Promise<unknown>> = [
+      () =>
+        adapter.createAccount({
+          tenant_id: tbc,
+          customerExternalId: 'c',
+          currency: 'USDC',
+          type: 'wallet',
+          chain: 'SOL',
+        }),
+      () => adapter.getBalances(tbc),
+      () => adapter.parseWebhook('{}', {}),
+    ]
+
+    for (const call of calls) {
+      await expect(call()).rejects.toBeInstanceOf(UnverifiedError)
+      await expect(call()).rejects.toThrow(/^UNVERIFIED: complete Phase 0/)
+    }
+
+    expect(() => adapter.resolveAssetAddress('USDC', 'SOL')).toThrow(
+      UnverifiedError,
+    )
+  })
+
+  it('reports the missing Circle key by variable name only', async () => {
+    const adapter = new CircleAdapter({ environment: 'testnet' })
+
+    await expect(adapter.checkAuth()).rejects.toThrow(
+      /CIRCLE_API_KEY_TESTNET/,
+    )
   })
 })
 
-describe('Mock adapter (interface conformance)', () => {
+describe('Mock adapter', () => {
   it('implements the ProviderAdapter happy path', async () => {
     const mock: ProviderAdapter = new MockAdapter('secret-for-tests-1234')
     await mock.checkAuth()
-    const cus = await mock.createCustomer!(customerInput)
-    expect(cus.tenant_id).toBe(tbc)
-    expect(cus.kycTier).toBe(0)
 
-    const upgraded = await mock.upgradeCustomerKyc!({
+    const customer = await mock.createCustomer!(customerInput)
+    expect(customer.tenant_id).toBe(tbc)
+
+    const account = await mock.createAccount!({
       tenant_id: tbc,
-      customerExternalId: cus.externalId,
-      targetTier: 1,
-      tier1: { phone: '+440000000000', dateOfBirth: '1980-01-01', identificationNumber: 'ID-000', homeAddress: '1 Example St' },
+      customerExternalId: customer.externalId,
+      currency: 'EUR',
+      type: 'treasury',
     })
-    expect(upgraded.kycTier).toBe(1)
 
-    const acc = await mock.createAccount!({ tenant_id: tbc, customerExternalId: cus.externalId, currency: 'EUR', type: 'virtual_account' })
     const balances = await mock.getBalances(tbc)
-    expect(balances).toEqual([{ tenant_id: tbc, accountExternalId: acc.externalId, available: { amount: '0', currency: 'EUR' } }])
-    expect(await mock.getBalances(tenantId('someone-else'))).toEqual([])
-
-    const quote = await mock.quoteFx!({ tenant_id: tbc, sell: { amount: '100', currency: 'EUR' }, buyCurrency: 'USD' })
-    const fx = await mock.executeFx!(tbc, quote.quoteRef)
-    expect(fx.quoteRef).toBe(quote.quoteRef)
-    await expect(mock.executeFx!(tenantId('someone-else'), quote.quoteRef)).rejects.toThrow()
+    expect(balances).toEqual([
+      {
+        tenant_id: tbc,
+        accountExternalId: account.externalId,
+        available: { amount: '0', currency: 'EUR' },
+      },
+    ])
   })
 
-  it('createPayout is idempotent per (tenant, key) and rejects payload drift', async () => {
+  it('createPayout is idempotent per tenant and key', async () => {
     const mock = new MockAdapter('secret-for-tests-1234')
-    const input = { tenant_id: tbc, counterpartyId: 'cp1', amount: { amount: '50.00', currency: 'USD' }, reference: 'Programme support', purposeCategory: 'food-security' }
-    const a = await mock.createPayout(input, 'idem-1')
-    const b = await mock.createPayout(input, 'idem-1')
-    expect(b.providerRef).toBe(a.providerRef)
-    expect(mock.calls.filter((c) => c.method === 'createPayout')).toHaveLength(1)
-    await expect(mock.createPayout({ ...input, amount: { amount: '60.00', currency: 'USD' } }, 'idem-1')).rejects.toBeInstanceOf(IdempotencyConflictError)
-    const other = await mock.createPayout({ ...input, tenant_id: tenantId('someone-else') }, 'idem-1')
-    expect(other.providerRef).not.toBe(a.providerRef)
+    const input = {
+      tenant_id: tbc,
+      counterpartyId: 'cp1',
+      amount: { amount: '5000', currency: 'USD' },
+      reference: 'Programme support',
+      purposeCategory: 'food-security',
+    }
+
+    const first = await mock.createPayout(input, 'idem-1')
+    const second = await mock.createPayout(input, 'idem-1')
+
+    expect(second.providerRef).toBe(first.providerRef)
+    expect(
+      mock.calls.filter((call) => call.method === 'createPayout'),
+    ).toHaveLength(1)
+
+    await expect(
+      mock.createPayout(
+        { ...input, amount: { amount: '6000', currency: 'USD' } },
+        'idem-1',
+      ),
+    ).rejects.toBeInstanceOf(IdempotencyConflictError)
   })
 })

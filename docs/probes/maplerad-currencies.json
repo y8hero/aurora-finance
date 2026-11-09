@@ -1,0 +1,96 @@
+{
+  "status": true,
+  "message": "Success",
+  "data": [
+    {
+      "name": "Nigerian Naira",
+      "currency": "NGN",
+      "symbol": "₦"
+    },
+    {
+      "name": "US Dollar",
+      "currency": "USD",
+      "symbol": "$"
+    },
+    {
+      "name": "Ghanaian Cedi",
+      "currency": "GHS",
+      "symbol": "GH₵"
+    },
+    {
+      "name": "Kenyan Shilling",
+      "currency": "KES",
+      "symbol": "KSh"
+    },
+    {
+      "name": "Tanzanian Shilling",
+      "currency": "TZS",
+      "symbol": "TSh"
+    },
+    {
+      "name": "Ugandan Shilling",
+      "currency": "UGX",
+      "symbol": "USh"
+    },
+    {
+      "name": "Malawian Kwacha",
+      "currency": "MWK",
+      "symbol": "MK"
+    },
+    {
+      "name": "Mozambican Metical",
+      "currency": "MZN",
+      "symbol": "MT"
+    },
+    {
+      "name": "PayPal USD",
+      "currency": "PYUSD",
+      "symbol": "PYUSD"
+    },
+    {
+      "name": "Rwandan Franc",
+      "currency": "RWF",
+      "symbol": "RF"
+    },
+    {
+      "name": "Congolese Franc",
+      "currency": "CDF",
+      "symbol": "FC"
+    },
+    {
+      "name": "South African Rand",
+      "currency": "ZAR",
+      "symbol": "R"
+    },
+    {
+      "name": "Sierra Leonean Leone",
+      "currency": "SLE",
+      "symbol": "Le"
+    },
+    {
+      "name": "Liberian Dollar",
+      "currency": "LRD",
+      "symbol": "L$"
+    },
+    {
+      "name": "Central African CFA Franc",
+      "currency": "XAF",
+      "symbol": "₣"
+    },
+    {
+      "name": "West African CFA Franc",
+      "currency": "XOF",
+      "symbol": "₣"
+    },
+    {
+      "name": "USD Tether",
+      "currency": "USDT",
+      "symbol": "₮"
+    },
+    {
+      "name": "USD Coin",
+      "currency": "USDC",
+      "symbol": "$"
+    }
+  ]
+}

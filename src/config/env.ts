@@ -133,8 +133,8 @@ function nonEmpty(value: string | undefined): boolean {
 
 /**
  * Empty legacy variables commonly produced by .env templates are treated as
- * unset before the strict Zod object validates its keys. Non-empty values are
- * handled by the explicit migration/refusal checks in loadConfig.
+ * unset before strict validation. Non-empty values are rejected explicitly
+ * below with migration/safety messages.
  */
 function removeEmptyLegacyMapleradKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const sanitized: NodeJS.ProcessEnv = { ...env }
@@ -146,6 +146,42 @@ function removeEmptyLegacyMapleradKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEn
   }
 
   return sanitized
+}
+
+/**
+ * Selects only Aurora-owned environment variables before passing the object to
+ * the strict Zod schema. process.env also contains Windows, npm, and shell
+ * variables, so validating it directly would incorrectly fail with
+ * "Unrecognized keys".
+ */
+const CONFIG_KEYS = [
+  'AURORA_ENV',
+  'PORT',
+  'LOG_LEVEL',
+  'MAPLERAD_ENV',
+  'MAPLERAD_BASE_URL',
+  'MAPLERAD_SECRET_KEY_SANDBOX',
+  'MAPLERAD_WEBHOOK_SECRET',
+  'MAPLERAD_WEBHOOK_ALLOWED_IPS',
+  'CIRCLE_ENV',
+  'CIRCLE_API_KEY_TESTNET',
+  'CIRCLE_API_KEY_MAINNET',
+  'CIRCLE_BASE_URL_TESTNET',
+  'CIRCLE_BASE_URL_MAINNET',
+  'MOCK_WEBHOOK_SECRET',
+] as const
+
+function selectConfigEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const selected: NodeJS.ProcessEnv = {}
+
+  for (const key of CONFIG_KEYS) {
+    const value = env[key]
+    if (value !== undefined) {
+      selected[key] = value
+    }
+  }
+
+  return selected
 }
 
 /**
@@ -179,7 +215,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError('Phase 1 skeleton refuses CIRCLE_ENV=mainnet. Testnet only.')
   }
 
-  const parsed = schema.safeParse(removeEmptyLegacyMapleradKeys(env))
+  const sanitized = removeEmptyLegacyMapleradKeys(env)
+  const parsed = schema.safeParse(selectConfigEnvironment(sanitized))
 
   if (!parsed.success) {
     const issues = parsed.error.issues
