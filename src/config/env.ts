@@ -32,58 +32,29 @@ export class Secret {
 
 export const DEFAULT_MAPLERAD_BASE_URL = 'https://api.maplerad.com'
 
-const optionalSecret = z
-  .string()
-  .trim()
-  .max(MAX_SECRET_LENGTH)
-  .optional()
-  .transform((value) => (value && value.length > 0 ? new Secret(value) : undefined))
+const optionalSecret = z.string().trim().max(MAX_SECRET_LENGTH).optional()
+  .transform((value) => value && value.length > 0 ? new Secret(value) : undefined)
 
-const optionalWhsecSecret = z
-  .string()
-  .trim()
-  .max(MAX_SECRET_LENGTH)
-  .optional()
-  .refine(
-    (value) => value === undefined || value.length === 0 || value.startsWith('whsec_'),
-    { message: 'Maplerad webhook signing secret must start with "whsec_"' },
-  )
-  .transform((value) => (value && value.length > 0 ? new Secret(value) : undefined))
+const optionalWhsecSecret = z.string().trim().max(MAX_SECRET_LENGTH).optional()
+  .refine((value) => value === undefined || value.length === 0 || value.startsWith('whsec_'), {
+    message: 'Maplerad webhook signing secret must start with "whsec_"',
+  })
+  .transform((value) => value && value.length > 0 ? new Secret(value) : undefined)
 
-const optionalUrl = z
-  .string()
-  .trim()
-  .max(MAX_URL_LENGTH)
-  .optional()
-  .transform((value) => (value && value.length > 0 ? value : undefined))
+const optionalUrl = z.string().trim().max(MAX_URL_LENGTH).optional()
+  .transform((value) => value && value.length > 0 ? value : undefined)
   .pipe(z.string().url().optional())
 
-const optionalPath = z
-  .string()
-  .trim()
-  .max(MAX_PATH_LENGTH)
-  .optional()
-  .transform((value) => (value && value.length > 0 ? value : undefined))
+const optionalPath = z.string().trim().max(MAX_PATH_LENGTH).optional()
+  .transform((value) => value && value.length > 0 ? value : undefined)
 
-const mapleradBaseUrl = z
-  .string()
-  .trim()
-  .max(MAX_URL_LENGTH)
-  .optional()
-  .transform((value) => (value && value.length > 0 ? value : DEFAULT_MAPLERAD_BASE_URL))
+const mapleradBaseUrl = z.string().trim().max(MAX_URL_LENGTH).optional()
+  .transform((value) => value && value.length > 0 ? value : DEFAULT_MAPLERAD_BASE_URL)
   .pipe(z.string().url().startsWith('https://', { message: 'Maplerad requires HTTPS' }))
 
-const ipList = z
-  .string()
-  .trim()
-  .max(MAX_IP_LIST_LENGTH)
-  .optional()
-  .transform((value) =>
-    value ? value.split(',').map((part) => part.trim()).filter(Boolean) : [],
-  )
-  .refine((ips) => ips.length <= 32, {
-    message: 'must contain no more than 32 IP addresses',
-  })
+const ipList = z.string().trim().max(MAX_IP_LIST_LENGTH).optional()
+  .transform((value) => value ? value.split(',').map((part) => part.trim()).filter(Boolean) : [])
+  .refine((ips) => ips.length <= 32, { message: 'must contain no more than 32 IP addresses' })
   .refine((ips) => ips.every((ip) => isIP(ip) !== 0), {
     message: 'must be a comma-separated list of IPv4/IPv6 addresses',
   })
@@ -91,12 +62,10 @@ const ipList = z
 const schema = z.object({
   AURORA_ENV: z.enum(['development', 'test', 'sandbox']).default('development'),
   PORT: z.coerce.number().int().positive().max(65535).default(3000),
-  LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-    .default('info'),
-
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   DATABASE_URL: optionalSecret,
   DATABASE_CA_CERT_PATH: optionalPath,
+  AURORA_ADMIN_API_KEY: optionalSecret,
 
   MAPLERAD_ENV: z.enum(['sandbox']).default('sandbox'),
   MAPLERAD_BASE_URL: mapleradBaseUrl,
@@ -109,12 +78,7 @@ const schema = z.object({
   CIRCLE_API_KEY_MAINNET: optionalSecret,
   CIRCLE_BASE_URL_TESTNET: optionalUrl,
   CIRCLE_BASE_URL_MAINNET: optionalUrl,
-
-  MOCK_WEBHOOK_SECRET: z
-    .string()
-    .min(8)
-    .max(MAX_SECRET_LENGTH)
-    .default('dev-only-mock-secret-change-me'),
+  MOCK_WEBHOOK_SECRET: z.string().min(8).max(MAX_SECRET_LENGTH).default('dev-only-mock-secret-change-me'),
 }).strict()
 
 export type AppConfig = Readonly<z.infer<typeof schema>>
@@ -129,79 +93,48 @@ function nonEmpty(value: string | undefined): boolean {
 
 function removeEmptyLegacyMapleradKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const sanitized = { ...env }
-
   for (const key of ['MAPLERAD_SECRET_KEY_LIVE', 'MAPLERAD_SECRET_KEY'] as const) {
-    if (typeof sanitized[key] === 'string' && sanitized[key].trim().length === 0) {
-      delete sanitized[key]
-    }
+    if (typeof sanitized[key] === 'string' && sanitized[key].trim().length === 0) delete sanitized[key]
   }
-
   return sanitized
 }
 
 const CONFIG_KEYS = [
-  'AURORA_ENV',
-  'PORT',
-  'LOG_LEVEL',
-  'DATABASE_URL',
-  'DATABASE_CA_CERT_PATH',
-  'MAPLERAD_ENV',
-  'MAPLERAD_BASE_URL',
-  'MAPLERAD_SECRET_KEY_SANDBOX',
-  'MAPLERAD_WEBHOOK_SECRET',
-  'MAPLERAD_WEBHOOK_ALLOWED_IPS',
-  'CIRCLE_ENV',
-  'CIRCLE_API_KEY_TESTNET',
-  'CIRCLE_API_KEY_MAINNET',
-  'CIRCLE_BASE_URL_TESTNET',
-  'CIRCLE_BASE_URL_MAINNET',
+  'AURORA_ENV', 'PORT', 'LOG_LEVEL', 'DATABASE_URL', 'DATABASE_CA_CERT_PATH',
+  'AURORA_ADMIN_API_KEY', 'MAPLERAD_ENV', 'MAPLERAD_BASE_URL',
+  'MAPLERAD_SECRET_KEY_SANDBOX', 'MAPLERAD_WEBHOOK_SECRET',
+  'MAPLERAD_WEBHOOK_ALLOWED_IPS', 'CIRCLE_ENV', 'CIRCLE_API_KEY_TESTNET',
+  'CIRCLE_API_KEY_MAINNET', 'CIRCLE_BASE_URL_TESTNET', 'CIRCLE_BASE_URL_MAINNET',
   'MOCK_WEBHOOK_SECRET',
 ] as const
 
 function selectConfigEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const selected: NodeJS.ProcessEnv = {}
-
-  for (const key of CONFIG_KEYS) {
-    if (env[key] !== undefined) selected[key] = env[key]
-  }
-
+  for (const key of CONFIG_KEYS) if (env[key] !== undefined) selected[key] = env[key]
   return selected
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  if (env.AURORA_ENV === 'production') {
-    throw new ConfigError(
-      'Phase 1 skeleton refuses AURORA_ENV=production. No production until Phase 4+ and legal sign-off.',
-    )
-  }
-
-  if (env.MAPLERAD_ENV === 'live') {
-    throw new ConfigError('Phase 1 skeleton refuses MAPLERAD_ENV=live. Sandbox only.')
-  }
-
-  if (nonEmpty(env.MAPLERAD_SECRET_KEY_LIVE)) {
-    throw new ConfigError(
-      'Phase 1 skeleton refuses a Maplerad LIVE key (MAPLERAD_SECRET_KEY_LIVE).',
-    )
-  }
-
-  if (nonEmpty(env.MAPLERAD_SECRET_KEY)) {
-    throw new ConfigError(
-      'MAPLERAD_SECRET_KEY was renamed to MAPLERAD_SECRET_KEY_SANDBOX. Update .env.',
-    )
-  }
-
-  if (env.CIRCLE_ENV === 'mainnet') {
-    throw new ConfigError('Phase 1 skeleton refuses CIRCLE_ENV=mainnet. Testnet only.')
-  }
+  if (env.AURORA_ENV === 'production') throw new ConfigError('Phase 1 skeleton refuses AURORA_ENV=production.')
+  if (env.MAPLERAD_ENV === 'live') throw new ConfigError('Phase 1 skeleton refuses MAPLERAD_ENV=live. Sandbox only.')
+  if (nonEmpty(env.MAPLERAD_SECRET_KEY_LIVE)) throw new ConfigError('Phase 1 skeleton refuses a Maplerad LIVE key (MAPLERAD_SECRET_KEY_LIVE).')
+  if (nonEmpty(env.MAPLERAD_SECRET_KEY)) throw new ConfigError('MAPLERAD_SECRET_KEY was renamed to MAPLERAD_SECRET_KEY_SANDBOX. Update .env.')
+  if (env.CIRCLE_ENV === 'mainnet') throw new ConfigError('Phase 1 skeleton refuses CIRCLE_ENV=mainnet. Testnet only.')
 
   const parsed = schema.safeParse(selectConfigEnvironment(removeEmptyLegacyMapleradKeys(env)))
-
   if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
-      .join('; ')
+    const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')
     throw new ConfigError(`Invalid configuration: ${issues}`)
+  }
+
+  if (parsed.data.AURORA_ENV !== 'development' &&
+      parsed.data.AURORA_ADMIN_API_KEY === undefined) {
+    throw new ConfigError('AURORA_ADMIN_API_KEY is required outside development.')
+  }
+
+  if (parsed.data.AURORA_ADMIN_API_KEY !== undefined &&
+      parsed.data.AURORA_ADMIN_API_KEY.reveal().length < 32) {
+    throw new ConfigError('AURORA_ADMIN_API_KEY must be at least 32 characters.')
   }
 
   return Object.freeze(parsed.data)
