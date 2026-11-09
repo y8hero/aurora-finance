@@ -1,10 +1,23 @@
 import pino from 'pino'
 import { describe, expect, it } from 'vitest'
-import { MockAdapter, mockWebhookParser } from '../src/adapters/mock/MockAdapter'
+import {
+  MockAdapter,
+  mockWebhookParser,
+} from '../src/adapters/mock/MockAdapter'
 import { InMemoryAuditLog } from '../src/core/audit/auditLog'
-import { PLATFORM_TENANT, tenantId, type ProviderName } from '../src/core/types'
-import { InMemoryWebhookEventStore } from '../src/webhooks/eventStore'
-import { WebhookReceiver, type WebhookParser } from '../src/webhooks/receiver'
+import {
+  PLATFORM_TENANT,
+  tenantId,
+  type ProviderName,
+} from '../src/core/types'
+import {
+  InMemoryWebhookEventStore,
+  type WebhookEventRecord,
+} from '../src/webhooks/eventStore'
+import {
+  WebhookReceiver,
+  type WebhookParser,
+} from '../src/webhooks/receiver'
 import { VerifierRegistry } from '../src/webhooks/signature'
 
 const tbc = tenantId('tbc')
@@ -18,7 +31,9 @@ function setup() {
 
   const receiver = new WebhookReceiver({
     verifiers: new VerifierRegistry().register(mock.verifier),
-    parsers: new Map<ProviderName, WebhookParser>([['mock', mockWebhookParser]]),
+    parsers: new Map<ProviderName, WebhookParser>([
+      ['mock', mockWebhookParser],
+    ]),
     tenantResolver: mock.tenantResolver,
     store,
     audit,
@@ -29,7 +44,11 @@ function setup() {
   return { mock, receiver, store, audit }
 }
 
-async function customer(mock: MockAdapter, tenant_id = tbc, name = 'User') {
+async function customer(
+  mock: MockAdapter,
+  tenant_id = tbc,
+  name = 'User',
+) {
   return mock.createCustomer({
     tenant_id,
     legalName: name,
@@ -43,6 +62,20 @@ async function customer(mock: MockAdapter, tenant_id = tbc, name = 'User') {
   })
 }
 
+function webhookRecord(tenant_id: typeof tbc): WebhookEventRecord {
+  return {
+    tenant_id,
+    provider: 'mock',
+    svix_id: 'delivery-store-test',
+    event_id: 'event-store-test',
+    event_type: 'test',
+    signature_ok: true,
+    raw_body: '{}',
+    raw_body_hash: 'hash',
+    received_at: now.toISOString(),
+  }
+}
+
 describe('webhook receiver', () => {
   it('stores a verified event exactly once', async () => {
     const { mock, receiver, store } = setup()
@@ -54,8 +87,16 @@ describe('webhook receiver', () => {
     })
     const headers = mock.signHeaders(body)
 
-    const first = await receiver.receive({ provider: 'mock', rawBody: body, headers })
-    const second = await receiver.receive({ provider: 'mock', rawBody: body, headers })
+    const first = await receiver.receive({
+      provider: 'mock',
+      rawBody: body,
+      headers,
+    })
+    const second = await receiver.receive({
+      provider: 'mock',
+      rawBody: body,
+      headers,
+    })
 
     expect(first.status).toBe('stored')
     expect(second.status).toBe('duplicate')
@@ -70,6 +111,7 @@ describe('webhook receiver', () => {
       type: 'collection.received',
       provider_customer_id: c.externalId,
     })
+
     const result = await receiver.receive({
       provider: 'mock',
       rawBody: body,
@@ -77,7 +119,9 @@ describe('webhook receiver', () => {
     })
 
     expect(result.status).toBe('stored')
-    if (result.status === 'stored') expect(result.record.tenant_id).toBe(tbc)
+    if (result.status === 'stored') {
+      expect(result.record.tenant_id).toBe(tbc)
+    }
   })
 
   it('rejects a replay resolved to another tenant', async () => {
@@ -85,6 +129,7 @@ describe('webhook receiver', () => {
     const first = await customer(mock, tbc, 'Tbc')
     const second = await customer(mock, other, 'Other')
     const delivery = 'shared-delivery'
+
     const bodyA = JSON.stringify({
       id: 'event-a',
       type: 'test',
@@ -96,13 +141,41 @@ describe('webhook receiver', () => {
       provider_customer_id: second.externalId,
     })
 
-    const headersA = { ...mock.signHeaders(bodyA), 'svix-id': delivery }
-    const headersB = { ...mock.signHeaders(bodyB), 'svix-id': delivery }
+    const headersA = {
+      ...mock.signHeaders(bodyA),
+      'svix-id': delivery,
+    }
+    const headersB = {
+      ...mock.signHeaders(bodyB),
+      'svix-id': delivery,
+    }
 
-    expect((await receiver.receive({ provider: 'mock', rawBody: bodyA, headers: headersA })).status).toBe('stored')
-    expect((await receiver.receive({ provider: 'mock', rawBody: bodyB, headers: headersB })).status).toBe('rejected')
+    expect(
+      (
+        await receiver.receive({
+          provider: 'mock',
+          rawBody: bodyA,
+          headers: headersA,
+        })
+      ).status,
+    ).toBe('stored')
+
+    expect(
+      (
+        await receiver.receive({
+          provider: 'mock',
+          rawBody: bodyB,
+          headers: headersB,
+        })
+      ).status,
+    ).toBe('rejected')
+
     expect(await store.list(other)).toHaveLength(0)
-    expect((await audit.list(PLATFORM_TENANT)).some((e) => e.action === 'webhook.rejected')).toBe(true)
+    expect(
+      (await audit.list(PLATFORM_TENANT)).some(
+        (entry) => entry.action === 'webhook.rejected',
+      ),
+    ).toBe(true)
   })
 
   it('rejects an unmapped customer and audits in the system scope', async () => {
@@ -121,7 +194,9 @@ describe('webhook receiver', () => {
 
     expect(result.status).toBe('rejected')
     expect(await store.list(tbc)).toHaveLength(0)
-    expect((await audit.list(PLATFORM_TENANT))[0]?.action).toBe('webhook.rejected')
+    expect((await audit.list(PLATFORM_TENANT))[0]?.action).toBe(
+      'webhook.rejected',
+    )
   })
 
   it('rejects invalid signatures and stale timestamps', async () => {
@@ -133,22 +208,58 @@ describe('webhook receiver', () => {
       provider_customer_id: c.externalId,
     })
 
-    const bad = { ...mock.signHeaders(body), [ 'x-mock-signature' ]: 'invalid' }
-    expect((await receiver.receive({ provider: 'mock', rawBody: body, headers: bad })).status).toBe('rejected')
+    const bad = {
+      ...mock.signHeaders(body),
+      ['x-mock-signature']: 'invalid',
+    }
+
     expect(
-      (await receiver.receive({
-        provider: 'mock',
-        rawBody: body,
-        headers: mock.signHeaders(body, Math.floor(now.getTime() / 1000) - 3601),
-      })).status,
+      (
+        await receiver.receive({
+          provider: 'mock',
+          rawBody: body,
+          headers: bad,
+        })
+      ).status,
+    ).toBe('rejected')
+
+    expect(
+      (
+        await receiver.receive({
+          provider: 'mock',
+          rawBody: body,
+          headers: mock.signHeaders(
+            body,
+            Math.floor(now.getTime() / 1000) - 3601,
+          ),
+        })
+      ).status,
     ).toBe('rejected')
   })
 
   it('rejects unparseable and unregistered provider events', async () => {
     const { mock, receiver } = setup()
     const bad = '{}'
-    expect((await receiver.receive({ provider: 'mock', rawBody: bad, headers: mock.signHeaders(bad) })).status).toBe('rejected')
-    expect((await receiver.receive({ provider: 'maplerad', rawBody: bad, headers: {} })).status).toBe('rejected')
+
+    expect(
+      (
+        await receiver.receive({
+          provider: 'mock',
+          rawBody: bad,
+          headers: mock.signHeaders(bad),
+        })
+      ).status,
+    ).toBe('rejected')
+
+    expect(
+      (
+        await receiver.receive({
+          provider: 'maplerad',
+          rawBody: bad,
+          headers: {},
+        })
+      ).status,
+    ).toBe('rejected')
   })
 
   it('keeps tenant queries isolated', async () => {
@@ -159,9 +270,53 @@ describe('webhook receiver', () => {
       type: 'test',
       provider_customer_id: c.externalId,
     })
-    await receiver.receive({ provider: 'mock', rawBody: body, headers: mock.signHeaders(body) })
+
+    await receiver.receive({
+      provider: 'mock',
+      rawBody: body,
+      headers: mock.signHeaders(body),
+    })
 
     expect(await store.list(other)).toHaveLength(0)
     expect((await store.list(tbc))[0]?.tenant_id).toBe(tbc)
+  })
+})
+
+describe('in-memory webhook event store', () => {
+  it('uses provider and delivery identity across tenants while keeping reads tenant-scoped', async () => {
+    const store = new InMemoryWebhookEventStore()
+    const first = webhookRecord(tbc)
+    const second = {
+      ...first,
+      tenant_id: other,
+      event_id: 'event-store-other',
+    }
+
+    const inserted = await store.insertIfAbsent(first)
+    const duplicate = await store.insertIfAbsent(second)
+
+    expect(inserted.inserted).toBe(true)
+    expect(duplicate.inserted).toBe(false)
+    expect(duplicate.record.tenant_id).toBe(tbc)
+    expect(await store.list(tbc)).toHaveLength(1)
+    expect(await store.list(other)).toHaveLength(0)
+
+    await expect(
+      store.markProcessed(
+        other,
+        second.provider,
+        second.svix_id,
+        now.toISOString(),
+      ),
+    ).rejects.toThrow(/not found for tenant/)
+
+    await expect(
+      store.markProcessed(
+        tbc,
+        first.provider,
+        first.svix_id,
+        now.toISOString(),
+      ),
+    ).resolves.toBeUndefined()
   })
 })

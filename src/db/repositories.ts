@@ -1,9 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import type { Pool, PoolClient } from 'pg'
 import type { TenantId, ProviderName } from '../core/types'
-import type { AuditEntry, AuditEntryInput, AuditLog, ChainVerification } from '../core/audit/auditLog'
+import type {
+  AuditEntry,
+  AuditEntryInput,
+  AuditLog,
+  ChainVerification,
+} from '../core/audit/auditLog'
 import { GENESIS_HASH, hashEntry } from '../core/audit/auditLog'
-import type { WebhookEventRecord, WebhookEventStore, InsertResult } from '../webhooks/eventStore'
+import type {
+  WebhookEventRecord,
+  WebhookEventStore,
+  InsertResult,
+} from '../webhooks/eventStore'
 import type { WebhookTenantResolver } from '../webhooks/receiver'
 import { IdempotencyConflictError } from '../core/idempotency'
 
@@ -59,44 +68,65 @@ export class PostgresWebhookEventStore implements WebhookEventStore {
 
     const existing = await this.pool.query<Row>(
       `SELECT provider, delivery_id, tenant_id, event_id, event_type, raw_body, raw_body_hash, received_at, processed_at
-       FROM webhook_events WHERE provider = $1 AND delivery_id = $2`,
+       FROM webhook_events
+       WHERE provider = $1 AND delivery_id = $2`,
       [record.provider, record.svix_id],
     )
     const row = existing.rows[0]
-    if (!row) throw new Error('Webhook insert conflict but existing row was not found')
+    if (!row) {
+      throw new Error('Webhook insert conflict but existing row was not found')
+    }
+
     return { inserted: false, record: asWebhook(row) }
   }
 
-  async findByDelivery(provider: ProviderName, deliveryId: string): Promise<WebhookEventRecord | undefined> {
+  async findByDelivery(
+    provider: ProviderName,
+    deliveryId: string,
+  ): Promise<WebhookEventRecord | undefined> {
     const result = await this.pool.query<Row>(
       `SELECT provider, delivery_id, tenant_id, event_id, event_type, raw_body, raw_body_hash, received_at, processed_at
-       FROM webhook_events WHERE provider = $1 AND delivery_id = $2`,
+       FROM webhook_events
+       WHERE provider = $1 AND delivery_id = $2`,
       [provider, deliveryId],
     )
+
     return result.rows[0] ? asWebhook(result.rows[0]) : undefined
   }
 
-  async markProcessed(tenantId: TenantId, provider: ProviderName, deliveryId: string, at: string): Promise<void> {
+  async markProcessed(
+    tenantId: TenantId,
+    provider: ProviderName,
+    deliveryId: string,
+    at: string,
+  ): Promise<void> {
     const result = await this.pool.query(
-      `UPDATE webhook_events SET processed_at = $1
+      `UPDATE webhook_events
+       SET processed_at = $1
        WHERE tenant_id = $2 AND provider = $3 AND delivery_id = $4`,
       [at, tenantId, provider, deliveryId],
     )
-    if (result.rowCount !== 1) throw new Error('Webhook event not found for tenant')
+
+    if (result.rowCount !== 1) {
+      throw new Error('Webhook event not found for tenant')
+    }
   }
 
   async list(tenantId: TenantId): Promise<readonly WebhookEventRecord[]> {
     const result = await this.pool.query<Row>(
       `SELECT provider, delivery_id, tenant_id, event_id, event_type, raw_body, raw_body_hash, received_at, processed_at
-       FROM webhook_events WHERE tenant_id = $1 ORDER BY received_at`,
+       FROM webhook_events
+       WHERE tenant_id = $1
+       ORDER BY received_at`,
       [tenantId],
     )
+
     return Object.freeze(result.rows.map(asWebhook))
   }
 }
 
 function asAudit(row: Row): AuditEntry {
-  const entry: AuditEntry = {
+  return {
     tenant_id: asTenantId(row.tenant_id),
     id: String(row.id),
     seq: Number(row.seq),
@@ -105,19 +135,12 @@ function asAudit(row: Row): AuditEntry {
     action: String(row.action),
     prev_hash: String(row.prev_hash),
     hash: String(row.hash),
+    ...(row.before != null ? { before: row.before } : {}),
+    ...(row.after != null ? { after: row.after } : {}),
+    ...(row.metadata != null
+      ? { metadata: row.metadata as Record<string, unknown> }
+      : {}),
   }
-
-  if (row.before !== null && row.before !== undefined) {
-    entry.before = row.before
-  }
-  if (row.after !== null && row.after !== undefined) {
-    entry.after = row.after
-  }
-  if (row.metadata !== null && row.metadata !== undefined) {
-    entry.metadata = row.metadata as Record<string, unknown>
-  }
-
-  return entry
 }
 
 export class PostgresAuditLog implements AuditLog {
@@ -134,14 +157,18 @@ export class PostgresAuditLog implements AuditLog {
       )
 
       const previous = await client.query<Row>(
-        `SELECT seq, hash FROM audit_log
-         WHERE tenant_id = $1 ORDER BY seq DESC LIMIT 1`,
+        `SELECT seq, hash
+         FROM audit_log
+         WHERE tenant_id = $1
+         ORDER BY seq DESC
+         LIMIT 1`,
         [input.tenant_id],
       )
       const prev = previous.rows[0]
       const seq = prev ? Number(prev.seq) + 1 : 1
       const prevHash = prev ? String(prev.hash) : GENESIS_HASH
       const createdAt = new Date().toISOString()
+
       const unhashed: Omit<AuditEntry, 'hash'> = {
         ...input,
         id: randomUUID(),
@@ -184,9 +211,12 @@ export class PostgresAuditLog implements AuditLog {
   async list(tenantId: TenantId): Promise<readonly AuditEntry[]> {
     const result = await this.pool.query<Row>(
       `SELECT id, tenant_id, seq, prev_hash, hash, actor, action, before, after, metadata, created_at
-       FROM audit_log WHERE tenant_id = $1 ORDER BY seq`,
+       FROM audit_log
+       WHERE tenant_id = $1
+       ORDER BY seq`,
       [tenantId],
     )
+
     return Object.freeze(result.rows.map(asAudit))
   }
 
@@ -197,7 +227,11 @@ export class PostgresAuditLog implements AuditLog {
     for (const entry of entries) {
       const { hash, ...rest } = entry
       if (entry.prev_hash !== previous || hashEntry(rest) !== hash) {
-        return { ok: false, length: entries.length, brokenAtSeq: entry.seq }
+        return {
+          ok: false,
+          length: entries.length,
+          brokenAtSeq: entry.seq,
+        }
       }
       previous = hash
     }
@@ -206,15 +240,22 @@ export class PostgresAuditLog implements AuditLog {
   }
 }
 
-export class PostgresProviderCustomerResolver implements WebhookTenantResolver {
+export class PostgresProviderCustomerResolver
+  implements WebhookTenantResolver
+{
   constructor(private readonly pool: Pool) {}
 
-  async resolve(provider: ProviderName, providerCustomerId: string): Promise<TenantId | undefined> {
+  async resolve(
+    provider: ProviderName,
+    providerCustomerId: string,
+  ): Promise<TenantId | undefined> {
     const result = await this.pool.query<{ tenant_id: string }>(
-      `SELECT tenant_id FROM provider_customers
+      `SELECT tenant_id
+       FROM provider_customers
        WHERE provider = $1 AND provider_customer_id = $2`,
       [provider, providerCustomerId],
     )
+
     return result.rows[0] ? asTenantId(result.rows[0].tenant_id) : undefined
   }
 }
@@ -262,25 +303,30 @@ export class PostgresIdempotencyStore {
     if (!claimed.rows[0]) {
       const existingResult = await this.pool.query<Row>(
         `SELECT tenant_id, key, request_hash, status, response, created_at, updated_at
-         FROM idempotency_keys WHERE tenant_id = $1 AND key = $2`,
+         FROM idempotency_keys
+         WHERE tenant_id = $1 AND key = $2`,
         [tenantId, key],
       )
       const existing = existingResult.rows[0]
+
       if (!existing) {
         throw new Error('Idempotency claim conflict but row was not found')
       }
 
       const record = asIdempotency(existing)
+
       if (record.request_hash !== fingerprint) {
         throw new IdempotencyConflictError(
           `Idempotency key ${key} reused with a different payload`,
         )
       }
+
       if (record.status === 'in_progress') {
         throw new IdempotencyConflictError(
           `Idempotency key ${key} is already in progress`,
         )
       }
+
       return record.response as T
     }
 
@@ -289,18 +335,26 @@ export class PostgresIdempotencyStore {
       const updated = await this.pool.query<Row>(
         `UPDATE idempotency_keys
          SET status = 'completed', response = $3, updated_at = now()
-         WHERE tenant_id = $1 AND key = $2 AND request_hash = $4 AND status = 'in_progress'
+         WHERE tenant_id = $1
+           AND key = $2
+           AND request_hash = $4
+           AND status = 'in_progress'
          RETURNING tenant_id, key, request_hash, status, response, created_at, updated_at`,
-        [tenantId, key, result, fingerprint],
+        [tenantId, key, JSON.stringify(result), fingerprint],
       )
+
       if (!updated.rows[0]) {
         throw new Error('Idempotency claim was lost before completion')
       }
+
       return result
     } catch (error) {
       await this.pool.query(
         `DELETE FROM idempotency_keys
-         WHERE tenant_id = $1 AND key = $2 AND request_hash = $3 AND status = 'in_progress'`,
+         WHERE tenant_id = $1
+           AND key = $2
+           AND request_hash = $3
+           AND status = 'in_progress'`,
         [tenantId, key, fingerprint],
       )
       throw error
@@ -313,6 +367,7 @@ export async function withClient<T>(
   callback: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect()
+
   try {
     return await callback(client)
   } finally {
