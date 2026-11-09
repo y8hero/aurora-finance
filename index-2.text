@@ -1,1 +1,3 @@
-EUR GBP
+tests/
+db/migrations/
+docs/

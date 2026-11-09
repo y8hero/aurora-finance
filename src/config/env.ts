@@ -5,10 +5,6 @@ const MAX_SECRET_LENGTH = 4096
 const MAX_URL_LENGTH = 2048
 const MAX_IP_LIST_LENGTH = 4096
 
-/**
- * A secret value that cannot be stringified or JSON-serialised by accident.
- * Call `.reveal()` only at the point of use (e.g. building an Authorization header).
- */
 export class Secret {
   readonly #value: string
 
@@ -49,9 +45,7 @@ const optionalWhsecSecret = z
   .optional()
   .refine(
     (value) => value === undefined || value.length === 0 || value.startsWith('whsec_'),
-    {
-      message: 'Maplerad webhook signing secret must start with "whsec_"',
-    },
+    { message: 'Maplerad webhook signing secret must start with "whsec_"' },
   )
   .transform((value) => (value && value.length > 0 ? new Secret(value) : undefined))
 
@@ -78,10 +72,7 @@ const ipList = z
   .optional()
   .transform((value) =>
     value
-      ? value
-          .split(',')
-          .map((part) => part.trim())
-          .filter((part) => part.length > 0)
+      ? value.split(',').map((part) => part.trim()).filter(Boolean)
       : [],
   )
   .refine((ips) => ips.length <= 32, {
@@ -91,35 +82,33 @@ const ipList = z
     message: 'must be a comma-separated list of IPv4/IPv6 addresses',
   })
 
-const schema = z
-  .object({
-    AURORA_ENV: z.enum(['development', 'test', 'sandbox']).default('development'),
+const schema = z.object({
+  AURORA_ENV: z.enum(['development', 'test', 'sandbox']).default('development'),
+  PORT: z.coerce.number().int().positive().max(65535).default(3000),
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .default('info'),
 
-    PORT: z.coerce.number().int().positive().max(65535).default(3000),
+  DATABASE_URL: optionalSecret,
 
-    LOG_LEVEL: z
-      .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-      .default('info'),
+  MAPLERAD_ENV: z.enum(['sandbox']).default('sandbox'),
+  MAPLERAD_BASE_URL: mapleradBaseUrl,
+  MAPLERAD_SECRET_KEY_SANDBOX: optionalSecret,
+  MAPLERAD_WEBHOOK_SECRET: optionalWhsecSecret,
+  MAPLERAD_WEBHOOK_ALLOWED_IPS: ipList,
 
-    MAPLERAD_ENV: z.enum(['sandbox']).default('sandbox'),
-    MAPLERAD_BASE_URL: mapleradBaseUrl,
-    MAPLERAD_SECRET_KEY_SANDBOX: optionalSecret,
-    MAPLERAD_WEBHOOK_SECRET: optionalWhsecSecret,
-    MAPLERAD_WEBHOOK_ALLOWED_IPS: ipList,
+  CIRCLE_ENV: z.enum(['testnet']).default('testnet'),
+  CIRCLE_API_KEY_TESTNET: optionalSecret,
+  CIRCLE_API_KEY_MAINNET: optionalSecret,
+  CIRCLE_BASE_URL_TESTNET: optionalUrl,
+  CIRCLE_BASE_URL_MAINNET: optionalUrl,
 
-    CIRCLE_ENV: z.enum(['testnet']).default('testnet'),
-    CIRCLE_API_KEY_TESTNET: optionalSecret,
-    CIRCLE_API_KEY_MAINNET: optionalSecret,
-    CIRCLE_BASE_URL_TESTNET: optionalUrl,
-    CIRCLE_BASE_URL_MAINNET: optionalUrl,
-
-    MOCK_WEBHOOK_SECRET: z
-      .string()
-      .min(8)
-      .max(MAX_SECRET_LENGTH)
-      .default('dev-only-mock-secret-change-me'),
-  })
-  .strict()
+  MOCK_WEBHOOK_SECRET: z
+    .string()
+    .min(8)
+    .max(MAX_SECRET_LENGTH)
+    .default('dev-only-mock-secret-change-me'),
+}).strict()
 
 export type AppConfig = Readonly<z.infer<typeof schema>>
 
@@ -131,13 +120,8 @@ function nonEmpty(value: string | undefined): boolean {
   return typeof value === 'string' && value.trim().length > 0
 }
 
-/**
- * Empty legacy variables commonly produced by .env templates are treated as
- * unset before strict validation. Non-empty values are rejected explicitly
- * below with migration/safety messages.
- */
 function removeEmptyLegacyMapleradKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const sanitized: NodeJS.ProcessEnv = { ...env }
+  const sanitized = { ...env }
 
   for (const key of ['MAPLERAD_SECRET_KEY_LIVE', 'MAPLERAD_SECRET_KEY'] as const) {
     if (typeof sanitized[key] === 'string' && sanitized[key].trim().length === 0) {
@@ -148,16 +132,11 @@ function removeEmptyLegacyMapleradKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEn
   return sanitized
 }
 
-/**
- * Selects only Aurora-owned environment variables before passing the object to
- * the strict Zod schema. process.env also contains Windows, npm, and shell
- * variables, so validating it directly would incorrectly fail with
- * "Unrecognized keys".
- */
 const CONFIG_KEYS = [
   'AURORA_ENV',
   'PORT',
   'LOG_LEVEL',
+  'DATABASE_URL',
   'MAPLERAD_ENV',
   'MAPLERAD_BASE_URL',
   'MAPLERAD_SECRET_KEY_SANDBOX',
@@ -175,19 +154,12 @@ function selectConfigEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const selected: NodeJS.ProcessEnv = {}
 
   for (const key of CONFIG_KEYS) {
-    const value = env[key]
-    if (value !== undefined) {
-      selected[key] = value
-    }
+    if (env[key] !== undefined) selected[key] = env[key]
   }
 
   return selected
 }
 
-/**
- * Loads config from an environment map. Pure: pass process.env in production
- * code, or a plain object in tests.
- */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (env.AURORA_ENV === 'production') {
     throw new ConfigError(
@@ -201,13 +173,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   if (nonEmpty(env.MAPLERAD_SECRET_KEY_LIVE)) {
     throw new ConfigError(
-      'Phase 1 skeleton refuses a Maplerad LIVE key (MAPLERAD_SECRET_KEY_LIVE). At Maplerad the key decides the environment; remove it until Phase 4+.',
+      'Phase 1 skeleton refuses a Maplerad LIVE key (MAPLERAD_SECRET_KEY_LIVE).',
     )
   }
 
   if (nonEmpty(env.MAPLERAD_SECRET_KEY)) {
     throw new ConfigError(
-      'MAPLERAD_SECRET_KEY was renamed to MAPLERAD_SECRET_KEY_SANDBOX (one base URL; the key decides the environment). Update .env.',
+      'MAPLERAD_SECRET_KEY was renamed to MAPLERAD_SECRET_KEY_SANDBOX. Update .env.',
     )
   }
 
@@ -215,14 +187,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError('Phase 1 skeleton refuses CIRCLE_ENV=mainnet. Testnet only.')
   }
 
-  const sanitized = removeEmptyLegacyMapleradKeys(env)
-  const parsed = schema.safeParse(selectConfigEnvironment(sanitized))
+  const parsed = schema.safeParse(selectConfigEnvironment(removeEmptyLegacyMapleradKeys(env)))
 
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
       .join('; ')
-
     throw new ConfigError(`Invalid configuration: ${issues}`)
   }
 
