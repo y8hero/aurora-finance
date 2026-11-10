@@ -1,0 +1,164 @@
+openapi: 3.1.0
+info:
+  title: Aurora Core API
+  version: 0.2.0
+  description: Tenant-scoped Aurora Core API. Provider synchronization is a later stage.
+servers:
+  - url: /
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200': { description: Health flags }
+  /webhooks/{provider}:
+    post:
+      operationId: webhook
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Stored }
+        '401': { description: Rejected }
+        '404': { description: Unknown }
+        '413': { description: Too large }
+        '501': { description: Unverified }
+  /v1/admin/tenants:
+    get:
+      operationId: listTenants
+      responses:
+        '200': { description: Tenants }
+    post:
+      operationId: createTenant
+      responses:
+        '201': { description: Created }
+  /v1/admin/tenants/{id}:
+    get:
+      operationId: getTenant
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Tenant }
+        '404': { description: Not found }
+  /v1/admin/tenants/{id}/api-keys:
+    get:
+      operationId: listApiKeys
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Keys }
+    post:
+      operationId: createApiKey
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '201': { description: Plaintext key shown once }
+  /v1/admin/tenants/{id}/api-keys/{keyId}:
+    delete:
+      operationId: revokeApiKey
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: keyId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Revoked }
+  /v1/customers:
+    get:
+      operationId: listCustomers
+      responses:
+        '200': { description: Customers }
+    post:
+      operationId: createCustomer
+      description: Local-only customer; provider synchronization is later.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201': { description: Customer }
+        '400': { description: Malformed request or missing Idempotency-Key }
+        '401': { description: Invalid tenant API key }
+        '403': { description: Insufficient scope }
+        '409': { description: Customer conflict or concurrent idempotency request }
+        '422':
+          description: Jurisdiction refusal or idempotency payload mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/customers/{id}:
+    get:
+      operationId: getCustomer
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Customer }
+        '404': { description: Not found }
+  /v1/audit:
+    get:
+      operationId: listAudit
+      responses:
+        '200': { description: Audit entries }
+  /v1/audit/verify:
+    get:
+      operationId: verifyAudit
+      responses:
+        '200': { description: Chain verification }
+  /v1/accounts:
+    get:
+      operationId: listAccounts
+      responses:
+        '501': { description: Provider schema unverified }
+    post:
+      operationId: createAccount
+      responses:
+        '501': { description: Provider schema unverified }
+  /v1/accounts/{id}/balances:
+    get:
+      operationId: getBalances
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '501': { description: Provider schema unverified }
+  /v1/payouts:
+    post:
+      operationId: createPayout
+      responses:
+        '501': { description: Provider schema unverified }
+  /v1/fx/quotes:
+    post:
+      operationId: quoteFx
+      responses:
+        '501': { description: Provider schema unverified }
+  /v1/cards:
+    post:
+      operationId: issueCard
+      responses:
+        '501': { description: Provider schema unverified }
+components:
+  securitySchemes:
+    tenantBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: aur_
+    adminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: admin
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256

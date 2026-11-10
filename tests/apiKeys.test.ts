@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ApiKeyInvalidError,
   ApiKeyScopeError,
   ApiKeyService,
   ApiKeyTenantError,
   generateApiKey,
   hashApiKey,
 } from '../src/core/apiKeys'
-import { InMemoryApiKeyRepository, InMemoryCustomerRepository } from '../src/db/tenantRepositories'
+import {
+  InMemoryApiKeyRepository,
+  InMemoryCustomerRepository,
+} from '../src/db/tenantRepositories'
 import { PLATFORM_TENANT, tenantId } from '../src/core/types'
 import { TokenBucketRateLimiter } from '../src/core/rateLimiter'
 
@@ -37,18 +41,31 @@ describe('API keys', () => {
     const service = new ApiKeyService(repository)
     const created = await service.create(tenant, ['read'])
 
-    await expect(service.authenticate(created.key, 'read')).resolves.toMatchObject({ id: created.id })
-    await expect(service.authenticate(created.key, 'write')).rejects.toBeInstanceOf(ApiKeyScopeError)
-    await expect(service.authenticate('aur_deadbeef_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'read')).rejects.toBeInstanceOf(ApiKeyScopeError)
+    await expect(service.authenticate(created.key, 'read')).resolves.toMatchObject({
+      id: created.id,
+    })
+    await expect(service.authenticate(created.key, 'write')).rejects.toBeInstanceOf(
+      ApiKeyScopeError,
+    )
+    await expect(
+      service.authenticate(
+        'aur_deadbeef_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        'read',
+      ),
+    ).rejects.toBeInstanceOf(ApiKeyInvalidError)
 
     await repository.revoke(tenant, created.id)
-    await expect(service.authenticate(created.key, 'read')).rejects.toBeInstanceOf(ApiKeyScopeError)
+    await expect(service.authenticate(created.key, 'read')).rejects.toBeInstanceOf(
+      ApiKeyInvalidError,
+    )
   })
 
   it('refuses platform keys and cross-tenant operations', async () => {
     const repository = new InMemoryApiKeyRepository()
     const service = new ApiKeyService(repository)
-    await expect(service.create(PLATFORM_TENANT, ['read'])).rejects.toBeInstanceOf(ApiKeyTenantError)
+    await expect(
+      service.create(PLATFORM_TENANT, ['read']),
+    ).rejects.toBeInstanceOf(ApiKeyTenantError)
 
     const customers = new InMemoryCustomerRepository()
     const customer = await customers.create(tenant, {

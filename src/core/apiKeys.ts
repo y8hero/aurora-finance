@@ -36,6 +36,10 @@ export class ApiKeyTenantError extends Error {
   override name = 'ApiKeyTenantError'
 }
 
+export class ApiKeyInvalidError extends Error {
+  override name = 'ApiKeyInvalidError'
+}
+
 export class ApiKeyScopeError extends Error {
   override name = 'ApiKeyScopeError'
 }
@@ -71,7 +75,10 @@ export class ApiKeyService {
     }
 
     const normalized = [...new Set(scopes)]
-    if (normalized.length === 0 || normalized.some((scope) => scope !== 'read' && scope !== 'write')) {
+    if (
+      normalized.length === 0 ||
+      normalized.some((scope) => scope !== 'read' && scope !== 'write')
+    ) {
       throw new ApiKeyScopeError('API key scopes must contain read and/or write')
     }
 
@@ -91,16 +98,10 @@ export class ApiKeyService {
     presentedKey: string,
     requiredScope: ApiKeyScope,
   ): Promise<ApiKeyRecord> {
-    const candidateHash = hashApiKey(presentedKey)
-    const record = await this.repository.findActiveByKeyHash(candidateHash)
+    const record = await this.repository.findActiveByKeyHash(hashApiKey(presentedKey))
 
     if (!record || record.status !== 'active') {
-      throw new ApiKeyScopeError('Invalid or revoked API key')
-    }
-
-    const storedHash = hashApiKey(presentedKey)
-    if (!equalHashes(candidateHash, storedHash)) {
-      throw new ApiKeyScopeError('Invalid or revoked API key')
+      throw new ApiKeyInvalidError('Invalid or revoked API key')
     }
 
     if (!record.scopes.includes(requiredScope)) {
@@ -113,5 +114,11 @@ export class ApiKeyService {
     }
 
     return record
+  }
+
+  static equalSecrets(left: string, right: string): boolean {
+    const a = createHash('sha256').update(left).digest()
+    const b = createHash('sha256').update(right).digest()
+    return a.length === b.length && timingSafeEqual(a, b)
   }
 }
